@@ -95,60 +95,141 @@ def check_valid_output(data, boxType):
     elif data['dataType'] not in valid_types:
         raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as output')
 
+# def save_memory_mapped_file(data):
+#     """
+#     Saves the input data as a memory-mapped JSON file with a unique name.
+
+#     Args:
+#         input_data (dict): The data to be saved.
+#         shared_disk_path (str): Path to the directory for saving the file.
+
+#     Returns:
+#         str: The path of the saved memory-mapped file.
+#     """
+#     launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
+#     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
+#     save_dir = (launch_dir / shared_disk_path).resolve()
+#     # Ensure the directory exists
+#     os.makedirs(save_dir, exist_ok=True)
+
+#     # Prepare hash before adding filepath
+#     json_bytes_initial = json.dumps(data, ensure_ascii=False).encode('utf-8')
+#     input_hash = hashlib.sha256(json_bytes_initial[:1024]).digest()[:4].hex()
+#     timestamp = str(int(time.time()))
+#     unique_filename = f"{timestamp}_{input_hash[:25]}.data"
+
+#     # Inject the filename into the data
+#     data['filename'] = unique_filename
+
+#     # Now serialize the updated data
+#     json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
+#     compressed_data = zlib.compress(json_bytes)
+
+#     full_path = save_dir / unique_filename
+#     with open(full_path, "wb") as file:
+#         file.write(compressed_data)
+#         file.flush()
+
+#     relative_path = full_path.relative_to(shared_disk_path)
+#     return str(relative_path).replace("\\", "/")
 def save_memory_mapped_file(data):
     """
-    Saves the input data as a memory-mapped JSON file with a unique name.
+    Saves tabular data as a Parquet file and nested dicts as standard JSON.
 
     Args:
-        input_data (dict): The data to be saved.
-        shared_disk_path (str): Path to the directory for saving the file.
+        data (dict | pd.DataFrame): The data to be saved.
 
     Returns:
-        str: The path of the saved memory-mapped file.
+        str: The relative path of the saved file.
     """
     launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
     save_dir = (launch_dir / shared_disk_path).resolve()
+    
     # Ensure the directory exists
     os.makedirs(save_dir, exist_ok=True)
 
-    # Prepare hash before adding filepath
-    json_bytes_initial = json.dumps(data, ensure_ascii=False).encode('utf-8')
-    input_hash = hashlib.sha256(json_bytes_initial[:1024]).digest()[:4].hex()
     timestamp = str(int(time.time()))
-    unique_filename = f"{timestamp}_{input_hash[:25]}.data"
 
-    # Inject the filename into the data
-    data['filename'] = unique_filename
+    # Extract the actual payload from the wrapper dictionary
+    payload = data.get('data') if isinstance(data, dict) and 'data' in data else data
 
-    # Now serialize the updated data
-    json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
-    compressed_data = zlib.compress(json_bytes)
+    # 1. PARQUET EXPORT: If payload is tabular, save it as Parquet
+    if isinstance(payload, (pd.DataFrame, gpd.GeoDataFrame)):
+        unique_filename = f"{timestamp}_output.parquet"
+        full_path = save_dir / unique_filename
+        
+        # Save the DataFrame to Parquet
+        payload.to_parquet(full_path, engine='pyarrow', index=False)
 
-    full_path = save_dir / unique_filename
-    with open(full_path, "wb") as file:
-        file.write(compressed_data)
-        file.flush()
+    # 2. JSON EXPORT: If data is a dict (metadata, vega specs), save as JSON
+    elif isinstance(data, dict):
+        json_bytes_initial = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        input_hash = hashlib.sha256(json_bytes_initial[:1024]).digest()[:4].hex()
+        unique_filename = f"{timestamp}_{input_hash[:25]}.json"
+        
+        data['filename'] = unique_filename
+        full_path = save_dir / unique_filename
+        
+        with open(full_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False)
+            
+    else:
+        raise TypeError("Unsupported data type. Must be a Pandas DataFrame or dict.")
 
     relative_path = full_path.relative_to(shared_disk_path)
     return str(relative_path).replace("\\", "/")
 
 
+# def load_memory_mapped_file(file_path):
+#     """
+#     Loads the JSON data from the specified memory-mapped JSON file.
+
+#     Args:
+#         file_path (str): The path of the memory-mapped JSON file to load.
+
+#     Returns:
+#         dict: The loaded JSON data.
+#     """
+#     launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
+#     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
+#     lod_dir = (launch_dir / shared_disk_path).resolve()
+
+#     # Ensure file_path is relative, then join and resolve
+#     requested_path = Path(file_path)
+#     full_path = (lod_dir / requested_path).resolve()
+
+#     # Security check to prevent directory traversal
+#     if not str(full_path).startswith(str(lod_dir)):
+#         raise PermissionError(f"Access to path '{full_path}' is not allowed.")
+
+#     # Normalize the path
+#     # file_path = Path(file_path).resolve()
+
+#     if not full_path.exists():
+#         raise FileNotFoundError(f"The file {full_path} does not exist.")
+
+#     # Using mmap for efficient memory-mapped loading
+#     with open(full_path, "rb") as file:
+#         with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
+#             # Decompress and decode directly from the memory-mapped file
+#             decompressed_data = zlib.decompress(mmapped_file[:])
+#             data = json.loads(decompressed_data.decode('utf-8'))
+#     return data
 def load_memory_mapped_file(file_path):
     """
-    Loads the JSON data from the specified memory-mapped JSON file.
+    Loads data from Parquet, JSON, or legacy compressed data files.
 
     Args:
-        file_path (str): The path of the memory-mapped JSON file to load.
+        file_path (str): The path of the file to load.
 
     Returns:
-        dict: The loaded JSON data.
+        dict | pd.DataFrame: The loaded data.
     """
     launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
     lod_dir = (launch_dir / shared_disk_path).resolve()
 
-    # Ensure file_path is relative, then join and resolve
     requested_path = Path(file_path)
     full_path = (lod_dir / requested_path).resolve()
 
@@ -156,19 +237,25 @@ def load_memory_mapped_file(file_path):
     if not str(full_path).startswith(str(lod_dir)):
         raise PermissionError(f"Access to path '{full_path}' is not allowed.")
 
-    # Normalize the path
-    # file_path = Path(file_path).resolve()
-
     if not full_path.exists():
         raise FileNotFoundError(f"The file {full_path} does not exist.")
 
-    # Using mmap for efficient memory-mapped loading
-    with open(full_path, "rb") as file:
-        with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
-            # Decompress and decode directly from the memory-mapped file
-            decompressed_data = zlib.decompress(mmapped_file[:])
-            data = json.loads(decompressed_data.decode('utf-8'))
-    return data
+    # 1. LOAD PARQUET
+    if full_path.suffix == '.parquet':
+        # Instantly reads the columnar data back into a DataFrame
+        return pd.read_parquet(full_path, engine='pyarrow')
+        
+    # 2. LOAD STANDARD JSON
+    elif full_path.suffix == '.json':
+        with open(full_path, "r", encoding="utf-8") as file:
+            return json.load(file)
+            
+    # 3. LOAD LEGACY COMPRESSED DATA
+    else:
+        with open(full_path, "rb") as file:
+            with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
+                decompressed_data = zlib.decompress(mmapped_file[:])
+                return json.loads(decompressed_data.decode('utf-8'))
 
 
 def parse_primitive(data_type, data_value):
@@ -268,22 +355,34 @@ def parseOutput(output):
         json_output['data'] = output
         json_output['dataType'] = type(output).__name__
     elif isinstance(output, pd.DataFrame) and not isinstance(output, gpd.GeoDataFrame):
-        # json_output['data'] = output.to_dict(orient='list')
-        clean_df = output.astype(object).where(pd.notnull(output), None)
-        clean_df = make_json_safe(clean_df)
-        json_output['data'] = clean_df.to_dict(orient='list')
+        ## json_output['data'] = output.to_dict(orient='list')
+        # clean_df = output.astype(object).where(pd.notnull(output), None)
+        # clean_df = make_json_safe(clean_df)
+        # json_output['data'] = clean_df.to_dict(orient='list')
+        # json_output['dataType'] = 'dataframe'
+
+        # Keep the raw DataFrame object instead of converting to a dict
+        json_output['data'] = output
         json_output['dataType'] = 'dataframe'
     elif isinstance(output, gpd.GeoDataFrame):
-        # output['geometry'] = output['geometry'].apply(lambda geom: geom.wkt)
-        # json_output['data'] = output.to_dict(orient='list')
-        gdf = fix_json_strings(output)
-        geojson_dict = json.loads(gdf.to_json())
-        json_output['data'] = geojson_dict
+        ## output['geometry'] = output['geometry'].apply(lambda geom: geom.wkt)
+        ## json_output['data'] = output.to_dict(orient='list')
+        # gdf = fix_json_strings(output)
+        # geojson_dict = json.loads(gdf.to_json())
+        # json_output['data'] = geojson_dict
+        # json_output['dataType'] = 'geodataframe'
+        # if hasattr(output, 'metadata') and 'name' in output.metadata:
+        #     parsed_geojson = json_output['data']
+        #     parsed_geojson['metadata'] = {'name': output.metadata['name']}
+        #     json_output['data'] = parsed_geojson
+
+        # Keep the raw GeoDataFrame object instead of converting to a GeoJSON string
+        json_output['data'] = output
         json_output['dataType'] = 'geodataframe'
+        
+        # Preserve metadata if it exists
         if hasattr(output, 'metadata') and 'name' in output.metadata:
-            parsed_geojson = json_output['data']
-            parsed_geojson['metadata'] = {'name': output.metadata['name']}
-            json_output['data'] = parsed_geojson
+            json_output['metadata'] = {'name': output.metadata['name']}
     elif isinstance(output, rasterio.io.DatasetReader):
         json_output['data'] = output.name
         json_output['dataType'] = 'raster'
