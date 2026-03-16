@@ -20,6 +20,11 @@ from openai import OpenAI
 # The Flask app
 from utk_curio.backend.app.api import bp
 
+# for duckDB + Arrow integration
+import duckdb
+import pyarrow as pa
+from flask import Response
+
 # Sandbox address
 api_address='http://'+os.getenv('FLASK_SANDBOX_HOST', 'localhost')
 api_port=int(os.getenv('FLASK_SANDBOX_PORT', 2000))
@@ -172,6 +177,47 @@ def transform_to_vega(data):
 
     return data
 
+# @bp.route('/get', methods=['GET'])
+# def get_file():
+#     file_name = request.args.get('fileName')
+#     vega = request.args.get('vega', 'false').lower() == 'true'
+
+#     if not file_name:
+#         return 'No file name specified', 400
+    
+#     launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
+#     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
+#     base_path = Path(launch_dir) / shared_disk_path
+#     base_path = base_path.resolve()
+
+#     requested_path = Path(file_name)
+#     full_path = (base_path / requested_path).resolve()
+
+#     if not str(full_path).startswith(str(base_path)):
+#         return 'Invalid file path: %s'%full_path, 403
+
+#     if not full_path.exists():
+#         return 'File does not exist: %s'%full_path, 404
+
+#     try:
+#         # Using mmap for efficient memory-mapped loading
+#         with open(full_path, "rb") as file:
+#             with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
+#                 # Decompress and decode directly from the memory-mapped file
+#                 decompressed_data = zlib.decompress(mmapped_file[:])
+#                 data = json.loads(decompressed_data.decode('utf-8'))
+
+#                 if isinstance(data, str):
+#                     data = json.loads(data)
+                
+#                 if vega:
+#                     data = transform_to_vega(data)
+
+#         return jsonify(data), 200
+
+#     except Exception as e:
+#         return f'Error loading file: {str(e)}', 500
+
 @bp.route('/get', methods=['GET'])
 def get_file():
     file_name = request.args.get('fileName')
@@ -179,36 +225,59 @@ def get_file():
 
     if not file_name:
         return 'No file name specified', 400
-    
-    launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
-    shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
-    base_path = Path(launch_dir) / shared_disk_path
-    base_path = base_path.resolve()
 
+    launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
+    shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
+    base_path = (launch_dir / shared_disk_path).resolve()
+    
     requested_path = Path(file_name)
     full_path = (base_path / requested_path).resolve()
 
+    # Security check
     if not str(full_path).startswith(str(base_path)):
-        return 'Invalid file path: %s'%full_path, 403
+        return 'Invalid file path: %s' % full_path, 403
 
     if not full_path.exists():
-        return 'File does not exist: %s'%full_path, 404
+        return 'File does not exist: %s' % full_path, 404
 
     try:
-        # Using mmap for efficient memory-mapped loading
-        with open(full_path, "rb") as file:
-            with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
-                # Decompress and decode directly from the memory-mapped file
-                decompressed_data = zlib.decompress(mmapped_file[:])
-                data = json.loads(decompressed_data.decode('utf-8'))
-
-                if isinstance(data, str):
-                    data = json.loads(data)
+        # 1. PARQUET FILES (The DuckDB Fast Path)
+        if full_path.suffix == '.parquet':
+            # Create a lightning-fast in-memory instance
+            con = duckdb.connect()
+            
+            # Query the file and convert directly to Apache Arrow
+            arrow_table = con.execute(f"SELECT * FROM '{full_path}'").fetch_arrow_table()
+            
+            if vega:
+                # Vega expects a standard JSON array of objects
+                vega_data = arrow_table.to_pylist()
+                return jsonify(vega_data), 200
+            else:
+                # Phase 4 Preview: Stream the Arrow IPC format directly!
+                sink = pa.BufferOutputStream()
+                with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
+                    writer.write_table(arrow_table)
                 
-                if vega:
-                    data = transform_to_vega(data)
+                return Response(
+                    sink.getvalue().to_pybytes(),
+                    mimetype='application/vnd.apache.arrow.stream'
+                )
 
-        return jsonify(data), 200
+        # 2. STANDARD JSON FILES (Metadata, Vega specs, etc.)
+        elif full_path.suffix == '.json':
+            with open(full_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return jsonify(data), 200
+
+        # 3. LEGACY FILES (Fallback to prevent breaking old nodes)
+        else:
+            with open(full_path, "rb") as file:
+                with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
+                    decompressed_data = zlib.decompress(mmapped_file[:])
+                    data = json.loads(decompressed_data.decode('utf-8'))
+                    
+            return jsonify({"data": data, "dataType": "dataframe"}), 200
 
     except Exception as e:
         return f'Error loading file: {str(e)}', 500
