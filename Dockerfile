@@ -27,7 +27,7 @@ RUN micromamba install -n base -y -c conda-forge \
 # Copy source + any local tarballs the requirements may reference
 COPY requirements.txt curio.py ./
 COPY templates/ templates/
-COPY tests/ tests/
+COPY docs/examples/ docs/examples/
 COPY utk_curio/ utk_curio/
 COPY utk_curio/sandbox/utk-0.8.9.tar.gz /app/utk_curio/sandbox/utk-0.8.9.tar.gz
 
