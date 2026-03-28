@@ -2,6 +2,10 @@ import os
 import re
 import json
 import time
+import zlib
+import shutil
+import textwrap
+from pathlib import Path
 from io import BytesIO
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -18,6 +22,343 @@ REPO_ROOT = os.path.abspath(
 WORKFLOW_SCREENSHOT_EXPECTED_DIR = os.path.join(
     REPO_ROOT, "docs", "examples", "flows", "expected_outputs"
 )
+
+
+
+def get_shared_data_dir() -> str:
+    """Directory where ``save_memory_mapped_file`` writes ``.data`` blobs.
+
+    Matches ``utk_curio/sandbox/util/parsers.py`` (``CURIO_LAUNCH_CWD`` +
+    ``CURIO_SHARED_DATA``). Defaults ``CURIO_LAUNCH_CWD`` to the repo root
+    so host-side Playwright resolves the same path as ``curio start`` when the
+    subprocess uses ``cwd`` = repo root (and matches Docker once ``./.curio`` is
+    bind-mounted to ``/app/.curio``).
+    """
+    launch_dir = Path(
+        os.environ.get("CURIO_LAUNCH_CWD", REPO_ROOT)
+    ).resolve()
+    shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
+    lod_dir = (launch_dir / Path(shared_disk_path)).resolve()
+    return str(lod_dir)
+
+
+# ---------------------------------------------------------------------------
+# .data file helpers (zlib-compressed JSON, same format as parsers.py)
+# ---------------------------------------------------------------------------
+
+def load_dot_data(path: str) -> dict:
+    """Read a ``.data`` file (zlib-compressed JSON) and return the parsed dict."""
+    with open(path, "rb") as f:
+        return json.loads(zlib.decompress(f.read()).decode("utf-8"))
+
+
+def save_dot_data(path: str, data: dict) -> None:
+    """Write *data* as zlib-compressed JSON to *path*."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    compressed = zlib.compress(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    with open(path, "wb") as f:
+        f.write(compressed)
+
+
+def strip_volatile_keys(data: dict) -> dict:
+    """Return a shallow copy of *data* without per-run metadata (``filename``)."""
+    stripped = {**data}
+    stripped.pop("filename", None)
+    return stripped
+
+
+# ---------------------------------------------------------------------------
+# Deterministic seeding for reproducible programmatic execution
+# ---------------------------------------------------------------------------
+
+_SEED_PREFIX = (
+    "import numpy as _np; _np.random.seed({seed}); "
+    "import random as _rnd; _rnd.seed({seed})\n"
+)
+
+
+def seed_node_code(code: str, seed: int = 42) -> str:
+    """Prepend deterministic random-seed lines to *code*.
+
+    Uses underscore-prefixed aliases (``_np``, ``_rnd``) so the seed
+    imports never shadow the user's own ``import numpy as np``.
+    """
+    return _SEED_PREFIX.format(seed=seed) + code
+
+
+_WIDGET_RE = re.compile(r"\[!!\s*(.*?)\s*!!\]")
+
+
+def resolve_widget_placeholders(code: str) -> str:
+    """Replace ``[!! name$type$default !!]`` widget markers with defaults.
+
+    The frontend resolves these before sending code to the sandbox; the
+    programmatic executor must do the same.
+    """
+    def _replace(m):
+        parts = m.group(1).split("$")
+        if len(parts) >= 3:
+            return parts[2]
+        return m.group(0)
+    return _WIDGET_RE.sub(_replace, code)
+
+
+PLAYWRIGHT_EXPECTED_DIR = os.path.join(
+    REPO_ROOT, ".curio", "playwright", "expected"
+)
+
+
+# ---------------------------------------------------------------------------
+# Vega-Lite SVG helpers
+# ---------------------------------------------------------------------------
+
+def dot_data_to_vega_values(data: dict) -> list[dict]:
+    """Convert a ``.data`` dict to the row-oriented list that Vega expects.
+
+    Mirrors the frontend ``parseDataframe`` / ``parseGeoDataframe`` functions
+    in ``src/utils/parsing.ts``.
+
+    The ``dataframe`` format can be either dict-of-dicts (``to_dict()``)
+    or dict-of-lists (``to_dict(orient='list')``); both are handled.
+    """
+    dtype = data.get("dataType")
+    raw = data.get("data", {})
+    if dtype == "dataframe":
+        columns = list(raw.keys())
+        first_col = raw[columns[0]]
+        if isinstance(first_col, dict):
+            keys = list(first_col.keys())
+        else:
+            keys = list(range(len(first_col)))
+        return [
+            {col: raw[col][k] for col in columns}
+            for k in keys
+        ]
+    elif dtype == "geodataframe":
+        return [f["properties"] for f in raw.get("features", [])]
+    return []
+
+
+def save_expected_svg(dataflow_name: str, node_id: str, svg_content: str) -> str:
+    """Save a programmatically generated expected SVG to
+    ``.curio/playwright/expected/<dataflow_name>/<node_id>.svg``.
+
+    Returns the absolute path of the saved file.
+    """
+    dest_dir = os.path.join(PLAYWRIGHT_EXPECTED_DIR, dataflow_name)
+    os.makedirs(dest_dir, exist_ok=True)
+    path = os.path.join(dest_dir, f"{node_id}.svg")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(svg_content)
+    return path
+
+
+def load_expected_svg(dataflow_name: str, node_id: str) -> str | None:
+    """Load a previously saved expected SVG, or return ``None``."""
+    path = os.path.join(PLAYWRIGHT_EXPECTED_DIR, dataflow_name, f"{node_id}.svg")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def compare_svg_structure(
+    actual_svg: str,
+    expected_svg: str,
+) -> list[str]:
+    """Structurally compare two Vega-rendered SVG strings.
+
+    Returns an empty list when the two SVGs are structurally equivalent.
+
+    The comparison walks the ``<g>`` element tree and checks that both
+    SVGs share the same hierarchy of ``class``, ``role``, and
+    ``aria-roledescription`` attributes at every level.
+    """
+    import xml.etree.ElementTree as ET
+
+    SVG_NS = "http://www.w3.org/2000/svg"
+
+    _STRUCTURAL_ATTRS = ("class", "role", "aria-roledescription")
+
+    def _parse(svg_str: str, label: str):
+        try:
+            return ET.fromstring(svg_str), []
+        except ET.ParseError as e:
+            return None, [f"{label} SVG is not valid XML: {e}"]
+
+    def _sig(el) -> str:
+        """Structural signature of an element: tag + key attributes."""
+        tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        parts = [tag]
+        for attr in _STRUCTURAL_ATTRS:
+            val = el.get(attr)
+            if val:
+                parts.append(f"{attr}={val}")
+        return "|".join(parts)
+
+    def _g_children(el):
+        """Return direct ``<g>`` children of *el*."""
+        return [
+            ch for ch in el
+            if ch.tag == f"{{{SVG_NS}}}g" or ch.tag == "g"
+        ]
+
+    def _compare_g_tree(actual_el, expected_el, path: str, diffs: list):
+        """Recursively compare ``<g>`` sub-trees by structural signature."""
+        actual_gs = _g_children(actual_el)
+        expected_gs = _g_children(expected_el)
+
+        if len(actual_gs) != len(expected_gs):
+            diffs.append(
+                f"At {path}: <g> child count differs — "
+                f"actual={len(actual_gs)}, expected={len(expected_gs)}"
+            )
+            return
+
+        for i, (a_g, e_g) in enumerate(zip(actual_gs, expected_gs)):
+            a_sig = _sig(a_g)
+            e_sig = _sig(e_g)
+            child_path = f"{path}/g[{i}]"
+            if a_sig != e_sig:
+                diffs.append(
+                    f"At {child_path}: signature mismatch — "
+                    f"actual=({a_sig}), expected=({e_sig})"
+                )
+            else:
+                _compare_g_tree(a_g, e_g, child_path, diffs)
+
+    diffs: list[str] = []
+
+    actual_root, errs = _parse(actual_svg, "Actual")
+    if errs:
+        return errs
+    expected_root, errs = _parse(expected_svg, "Expected")
+    if errs:
+        return errs
+
+    _compare_g_tree(actual_root, expected_root, "svg", diffs)
+
+    return diffs
+
+
+def _ensure_parsers_env():
+    """Ensure ``CURIO_LAUNCH_CWD`` and ``CURIO_SHARED_DATA`` are set.
+
+    ``save_memory_mapped_file`` uses ``CURIO_SHARED_DATA`` with
+    ``Path.relative_to`` and requires an absolute path.  When the test
+    process is *not* started via ``curio start`` (e.g. ``CURIO_E2E_USE_EXISTING``
+    in CI) these variables may be absent.
+    """
+    if "CURIO_LAUNCH_CWD" not in os.environ:
+        os.environ["CURIO_LAUNCH_CWD"] = REPO_ROOT
+    if "CURIO_SHARED_DATA" not in os.environ:
+        os.environ["CURIO_SHARED_DATA"] = str(
+            Path(os.path.join(REPO_ROOT, ".curio", "data")).resolve()
+        )
+
+
+def execute_workflow_programmatically(spec, seed: int = 42) -> dict[str, str]:
+    """Execute every code node in-process and return *{node_id: expected_path}*.
+
+    Mirrors the sandbox ``python_wrapper.txt`` flow — load upstream data,
+    call user code, serialise via ``parseOutput`` / ``save_memory_mapped_file``
+    — but runs entirely inside the test process.  Results are copied to
+    ``.curio/playwright/expected/<workflow>/`` for later comparison with the
+    browser-produced ``.data`` files.
+    """
+    _ensure_parsers_env()
+
+    from utk_curio.sandbox.util.parsers import (
+        parseInput,
+        parseOutput,
+        save_memory_mapped_file,
+        load_memory_mapped_file,
+        checkIOType,
+    )
+
+    outputs: dict[str, dict] = {}   # node_id → {"path": ..., "dataType": ...}
+    expected: dict[str, str] = {}   # node_id → absolute path in expected dir
+
+    dataflow_name = os.path.splitext(os.path.basename(spec.filepath))[0]
+    dest_dir = os.path.join(PLAYWRIGHT_EXPECTED_DIR, dataflow_name)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    # User code uses relative paths (e.g. "docs/examples/data/…") that are
+    # resolved from the repo root — the same CWD the sandbox uses via
+    # CURIO_LAUNCH_CWD.  Switch CWD for the duration of execution.
+    original_cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        for node in spec.topo_sorted_nodes():
+            # Non-code nodes: propagate upstream output without execution
+            if node.category != "code":
+                upstreams = spec.upstream_nodes(node.id)
+                if len(upstreams) == 1 and upstreams[0] in outputs:
+                    outputs[node.id] = outputs[upstreams[0]]
+                elif len(upstreams) > 1:
+                    outputs[node.id] = {
+                        "path": [outputs[uid] for uid in upstreams if uid in outputs],
+                        "dataType": "outputs",
+                    }
+                continue
+
+            # --- resolve input (mirrors python_wrapper.txt lines 30-49) ---
+            upstreams = spec.upstream_nodes(node.id)
+            if not upstreams:
+                incoming = ""
+            elif len(upstreams) == 1:
+                up = outputs[upstreams[0]]
+                if up.get("dataType") == "outputs":
+                    incoming = []
+                    for elem in up["path"]:
+                        raw = load_memory_mapped_file(elem["path"])
+                        incoming.append(parseInput(raw))
+                else:
+                    raw = load_memory_mapped_file(up["path"])
+                    incoming = parseInput(raw)
+            else:
+                incoming = []
+                for uid in upstreams:
+                    raw = load_memory_mapped_file(outputs[uid]["path"])
+                    incoming.append(parseInput(raw))
+
+            # --- exec seeded user code ---
+            resolved = resolve_widget_placeholders(node.content)
+            seeded = seed_node_code(resolved, seed)
+
+            # Provide the same top-level imports as python_wrapper.txt
+            import warnings as _w; _w.filterwarnings("ignore")
+            import rasterio, geopandas, pandas, mmap, hashlib, ast  # noqa: F811
+            ns: dict = {
+                "warnings": _w, "rasterio": rasterio,
+                "gpd": geopandas, "geopandas": geopandas,
+                "pd": pandas, "pandas": pandas,
+                "json": json, "mmap": mmap, "zlib": zlib, "os": os,
+                "time": time, "hashlib": hashlib, "ast": ast,
+            }
+            exec(
+                "def userCode(arg):\n" + textwrap.indent(seeded, "    "),
+                ns,
+            )
+            result = ns["userCode"](incoming)
+
+            # --- serialise exactly like the sandbox ---
+            parsed = parseOutput(result)
+            checkIOType(parsed, node.type, False)
+            rel_path = save_memory_mapped_file(parsed)
+
+            outputs[node.id] = {"path": rel_path, "dataType": parsed["dataType"]}
+
+            gt_path = os.path.join(dest_dir, f"{dataflow_name}_{node.id}.data")
+            shutil.copy2(
+                os.path.join(get_shared_data_dir(), rel_path),
+                gt_path,
+            )
+            expected[node.id] = gt_path
+    finally:
+        os.chdir(original_cwd)
+
+    return expected
 
 
 def _capture_full_page(page: Page):

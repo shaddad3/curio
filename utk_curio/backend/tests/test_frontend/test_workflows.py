@@ -3,7 +3,16 @@ import re
 import json
 import time
 
-from .utils import save_workflow_test_screenshot
+from .utils import (
+    save_workflow_test_screenshot,
+    get_shared_data_dir,
+    load_dot_data,
+    strip_volatile_keys,
+    execute_workflow_programmatically,
+    dot_data_to_vega_values,
+    save_expected_svg,
+    compare_svg_structure,
+)
 from .workflow_spec import NodeSpec, CODE_EDITOR_TYPES
 
 """
@@ -366,6 +375,9 @@ class TestWorkflowCanvas:
                     f"grammar editor"
                 )
                 # TODO: check if the grammar is rendered inside the editor
+                # Verify the json loaded into the grammar editor matches the
+                # workflow JSON content. 
+                # Grammar editor renders a JSONEditorReact component.
 
             elif node.category == "datapool":
                 data_tabs = node_el.locator("#data-tabs-tab-0")
@@ -388,11 +400,17 @@ class TestWorkflowCanvas:
 
     def test_node_execution(self, loaded_workflow, request):
         """Click the play button on each executable node in topological
-        order and verify that the output status shows *Done*."""
-        # First: run all playable nodes end-to-end
+        order and verify that the output status shows *Done*.
+
+        Before touching the browser, the workflow is executed
+        programmatically (in-process, seeded) to produce expected
+        ``.data`` files.  After the browser run the two sets of files
+        are compared.
+        """
+        expected_map = execute_workflow_programmatically(self.spec, seed=42)
+
         self._execute_all_playable_nodes()
 
-        # Then: assert every playable node ended with "Done"
         for node in self.spec.nodes:
             if not node.has_play_button:
                 continue
@@ -408,9 +426,9 @@ class TestWorkflowCanvas:
                 f"after full workflow execution"
             )
 
-            # ================================================================
+            # ---------------------------------------------------------------
             # Check output tab is active and rendered correctly
-            # ================================================================
+            # ---------------------------------------------------------------
 
             # wait for output tab to be visible
             output_tab = node_el.locator(
@@ -486,7 +504,11 @@ class TestWorkflowCanvas:
                         f"Node {node.id} ({node.type}) is not missing its "
                         f"warning heading"
                     )
-                    # its content should be a text with the output file path following the pattern: <uuid_regex>.data
+
+                    # ------------------------------------------------------------------------
+                    # Test the output tab pane content.
+                    # ------------------------------------------------------------------------
+                    # it should be a text with the output file path following the pattern: <uuid_regex>.data
                     output_content = tab_content.locator("div").filter(
                         has_text=re.compile(r"Saved to file\:\s\w+_\w+.data$")
                     )
@@ -496,9 +518,147 @@ class TestWorkflowCanvas:
                         f"output content"
                     )
 
-                    # TODO check .data file content
-                    # we should read the .data file content and check if it matches the ground truth data 
-                    # we should retrieve the ground truth data from the disk
+                    # Verify .data file content against programmatic execution
+                    data_file_name = output_content.first.evaluate(
+                        r"""(el) => {
+                            const match = el.textContent.match(/Saved to file:\s(\w+_\w+\.data)$/);
+                            return match ? match[1] : null;
+                        }"""
+                    )
+                    assert data_file_name is not None, (
+                        f"Node {node.id} ({node.type}) is missing its data file path"
+                    )
+
+                    data_file_path = os.path.join(get_shared_data_dir(), data_file_name)
+                    assert os.path.exists(data_file_path), (
+                        f"Node {node.id} ({node.type}) is missing its data file"
+                    )
+
+                    if node.id in expected_map:
+                        actual = strip_volatile_keys(load_dot_data(data_file_path))
+                        expected = strip_volatile_keys(
+                            load_dot_data(expected_map[node.id])
+                        )
+                        if actual != expected:
+                            diff_keys = [
+                                k for k in set(actual) | set(expected)
+                                if actual.get(k) != expected.get(k)
+                            ]
+                            raise AssertionError(
+                                f"Node {node.id} ({node.type}) data file content "
+                                f"does not match the programmatic execution. "
+                                f"Differing top-level keys: {diff_keys}"
+                            )
+                
+                
+                
+                # ----------------------------------------------------------
+                # Test created SVG Vega-Lite visualizations
+                # ----------------------------------------------------------
+                if node.category == "grammar" and node.type == "VIS_VEGA":
+                    vega_container_id = f"vega{node.id}"
+
+                    # A -- Verify SVG exists and is non-empty
+                    svg_locator = node_el.locator(f"#{vega_container_id} svg")
+                    svg_locator.first.wait_for(state="visible", timeout=15000)
+                    assert svg_locator.count() >= 1, (
+                        f"Grammar node {node.id} ({node.type}) is missing "
+                        f"its rendered SVG inside #{vega_container_id}"
+                    )
+
+                    # B -- Re-compile the spec programmatically and save
+                    #      the expected SVG (mirrors .data baseline pattern)
+                    spec_json = json.loads(
+                        node.content.replace("\r\n", "\n").replace("\r", "\n")
+                    )
+
+                    upstream_ids = self.spec.upstream_nodes(node.id)
+                    vega_values: list[dict] = []
+                    for uid in upstream_ids:
+                        candidate = uid
+                        visited: set[str] = set()
+                        while candidate and candidate not in expected_map:
+                            visited.add(candidate)
+                            parents = self.spec.upstream_nodes(candidate)
+                            candidate = next(
+                                (p for p in parents if p not in visited),
+                                None,
+                            )
+                        if candidate and candidate in expected_map:
+                            upstream_data = load_dot_data(
+                                expected_map[candidate]
+                            )
+                            vega_values = dot_data_to_vega_values(upstream_data)
+                            break
+
+                    container_dims = self.page.evaluate(
+                        """(containerId) => {
+                            const el = document.getElementById(containerId);
+                            if (!el) return null;
+                            return {
+                                width: el.clientWidth,
+                                height: el.clientHeight
+                            };
+                        }""",
+                        vega_container_id,
+                    )
+
+                    expected_svg = self.page.evaluate(
+                        """({ spec, values, dims }) => {
+                            const vega = window.__curio_vega;
+                            const lite = window.__curio_vegaLite;
+                            if (!vega || !lite) return null;
+                            spec.data = { values: values, name: 'data' };
+                            spec.width = dims ? dims.width : 300;
+                            spec.height = dims ? dims.height : 200;
+                            const vegaSpec = lite.compile(spec).spec;
+                            const view = new vega.View(vega.parse(vegaSpec))
+                                .renderer('svg')
+                                .initialize(document.createElement('div'));
+                            return view.runAsync().then(() => view.toSVG());
+                        }""",
+                        {
+                            "spec": spec_json,
+                            "values": vega_values,
+                            "dims": container_dims,
+                        },
+                    )
+                    assert expected_svg is not None, (
+                        f"Grammar node {node.id} ({node.type}): "
+                        f"programmatic Vega-Lite re-compilation returned null "
+                        f"(window.__curio_vega / __curio_vegaLite missing?)"
+                    )
+
+                    dataflow_name = os.path.splitext(
+                        os.path.basename(self.spec.filepath)
+                    )[0]
+                    save_expected_svg(dataflow_name, node.id, expected_svg)
+
+                    # C -- Extract the actual SVG from the DOM
+                    actual_svg = self.page.evaluate(
+                        """(containerId) => {
+                            const el = document.getElementById(containerId);
+                            if (!el) return null;
+                            const svg = el.querySelector('svg');
+                            return svg ? svg.outerHTML : null;
+                        }""",
+                        vega_container_id,
+                    )
+                    assert actual_svg is not None, (
+                        f"Grammar node {node.id} ({node.type}): "
+                        f"could not extract SVG from #{vega_container_id}"
+                    )
+
+                    # D -- Structural comparison
+                    diffs = compare_svg_structure(
+                        actual_svg,
+                        expected_svg,
+                    )
+                    assert not diffs, (
+                        f"Grammar node {node.id} ({node.type}) SVG "
+                        f"structural mismatch:\n"
+                        + "\n".join(f"  - {d}" for d in diffs)
+                    )
 
         self._save_screenshot(request)
 
@@ -515,11 +675,12 @@ class TestWorkflowCanvas:
 
             node_el = self._node_locator(node)
 
-            # ================================================================
+            # ---------------------------------------------------------------
             # Check provenance graph is rendered correctly
-            # ================================================================
+            # ---------------------------------------------------------------
 
-            # If the node has a provenance tab, check if the provenance graph is rendered correctly
+            # If the node has a provenance tab, 
+            # check if the provenance graph is rendered correctly
             provenance_tab = node_el.locator(
                 '.nav-link[data-rr-ui-event-key="provenance"]'
             )
