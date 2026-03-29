@@ -37,14 +37,34 @@ elif(file_path):
 
 incomingInput = None
 
-if input:
+#if input:
+#    checkIOType(input, boxType)
+#    if(dataType == 'outputs'):
+#        incomingInput = []
+#        for elem in input:
+#            incomingInput.append(parseInput(elem))
+#    else:
+#        incomingInput = parseInput(input)
+#else:
+#    incomingInput = ''
+
+# Use type-checking first to safely short-circuit the boolean evaluation of DataFrames
+if isinstance(input, (pd.DataFrame, gpd.GeoDataFrame)) or input:
     checkIOType(input, boxType)
     if(dataType == 'outputs'):
         incomingInput = []
         for elem in input:
-            incomingInput.append(parseInput(elem))
+            # Bypass the legacy dict parser if the element is already a DataFrame
+            if isinstance(elem, (pd.DataFrame, gpd.GeoDataFrame)):
+                incomingInput.append(elem)
+            else:
+                incomingInput.append(parseInput(elem))
     else:
-        incomingInput = parseInput(input)
+        # Bypass the legacy dict parser if the input is already a DataFrame
+        if isinstance(input, (pd.DataFrame, gpd.GeoDataFrame)):
+            incomingInput = input
+        else:
+            incomingInput = parseInput(input)
 else:
     incomingInput = ''
 

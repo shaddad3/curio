@@ -1,12 +1,47 @@
+// export async function fetchData(fileName: string, vega: boolean = false) {
+//     try {
+//         // const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}${vega ? '&vega=true' : ''}`;
+//         const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}`;
+//         console.log(`Fetching ${url}`);
+        
+//         const response = await fetch(url, {
+//             headers: {
+//                 'Content-Type': 'application/json',
+//             },
+//         });
+
+//         if (!response.ok) {
+//             throw new Error(`Failed to fetch file ${url}: ${response.statusText}`);
+//         }
+
+//         const jsonData = await response.json();
+
+//         if(vega)
+//             return transformToVega(jsonData);
+
+//         console.log(`Fetched data`, jsonData);
+
+//         return jsonData;
+//     } catch (error: unknown) {
+//         console.error("Error:", error instanceof Error ? error.message : String(error));
+//         throw error;
+//     }
+// }
+
+import { tableFromIPC } from 'apache-arrow';
+
 export async function fetchData(fileName: string, vega: boolean = false) {
     try {
-        // const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}${vega ? '&vega=true' : ''}`;
+        // We request the file without the vega URL param because 
+        // the backend now streams the raw Arrow IPC format directly.
         const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}`;
         console.log(`Fetching ${url}`);
         
         const response = await fetch(url, {
             headers: {
-                'Content-Type': 'application/json',
+                // Change Content-Type (which is for sending data) 
+                // to Accept (which tells the server what we want to receive)
+                'Accept': 'application/vnd.apache.arrow.stream, application/json',
             },
         });
 
@@ -14,14 +49,74 @@ export async function fetchData(fileName: string, vega: boolean = false) {
             throw new Error(`Failed to fetch file ${url}: ${response.statusText}`);
         }
 
+        const contentType = response.headers.get('content-type');
+
+        // 1. ARROW BYTE-STREAM PATH (High Performance)
+        if (contentType && contentType.includes('application/vnd.apache.arrow.stream')) {
+            const arrayBuffer = await response.arrayBuffer();
+            const arrowTable = tableFromIPC(arrayBuffer);
+
+            // if (vega) {
+            //     // Vega-Lite expects row-oriented data (an array of objects).
+            //     // Arrow tables natively map to this structure incredibly fast.
+            //     const vegaData = arrowTable.toArray().map(row => row?.toJSON());
+            //     return vegaData;
+            // }
+            if (vega) {
+                // Vega-Lite expects row-oriented data
+                const vegaData = arrowTable.toArray().map(row => {
+                    const obj = row?.toJSON();
+                    // FIX: Vega-Lite crashes on BigInts. Cast them to standard Numbers.
+                    for (const key in obj) {
+                        if (typeof obj[key] === 'bigint') {
+                            obj[key] = Number(obj[key]);
+                        }
+                    }
+                    return obj;
+                });
+                return vegaData;
+            }
+
+            // // Existing Curio nodes (like the Table) expect a column-oriented dictionary.
+            // // We extract each column from the Arrow Table to mimic the legacy JSON shape.
+            // const columnsData: Record<string, any[]> = {};
+            // arrowTable.schema.fields.forEach(field => {
+            //     const column = arrowTable.getChild(field.name);
+            //     // Convert the Arrow vector into a standard JavaScript Array
+            //     columnsData[field.name] = column ? Array.from(column.toArray()) : [];
+            // });
+            // Existing Curio nodes expect a column-oriented dictionary.
+            const columnsData: Record<string, any[]> = {};
+            arrowTable.schema.fields.forEach(field => {
+                const column = arrowTable.getChild(field.name);
+                if (column) {
+                    const arr = Array.from(column.toArray());
+                    // FIX: Cast BigInts to standard Numbers for frontend Data Pools
+                    columnsData[field.name] = arr.map(v => typeof v === 'bigint' ? Number(v) : v);
+                } else {
+                    columnsData[field.name] = [];
+                }
+            });
+
+            const reconstructedJson = {
+                data: columnsData,
+                dataType: "dataframe"
+            };
+
+            console.log(`Fetched Arrow stream`, reconstructedJson);
+            return reconstructedJson;
+        }
+
+        // 2. LEGACY JSON PATH (Metadata, Configs, Old Files)
         const jsonData = await response.json();
 
-        if(vega)
+        if (vega) {
             return transformToVega(jsonData);
+        }
 
-        console.log(`Fetched data`, jsonData);
-
+        console.log(`Fetched JSON data`, jsonData);
         return jsonData;
+
     } catch (error: unknown) {
         console.error("Error:", error instanceof Error ? error.message : String(error));
         throw error;

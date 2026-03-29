@@ -52,32 +52,78 @@ def validate_output(data, boxType):
         raise Exception(f'{boxType} does not support output')
 
 
-# Input Type Checks
+# # Input Type Checks
+# def check_dataframe_input(data, boxType):
+#     if isinstance(data, list):
+#         return
+#     if data['dataType'] == 'outputs' and len(data['data']) > 5:
+#         raise Exception(f'{boxType} only supports five inputs')
+
+#     valid_types = {'dataframe', 'geodataframe'}
+#     if data['dataType'] == 'outputs':
+#         for elem in data['data']:
+#             if elem['dataType'] not in valid_types:
+#                 raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
+#     elif data['dataType'] not in valid_types:
+#         raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
+
+# def check_transformation_input(data, boxType):
+#     valid_types = {'dataframe', 'geodataframe', 'raster'}
+#     if data['dataType'] == 'outputs' and len(data['data']) > 2:
+#         raise Exception(f'{boxType} only supports one or two inputs')
+
+#     if data['dataType'] == 'outputs':
+#         for elem in data['data']:
+#             if elem['dataType'] not in valid_types:
+#                 raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
+#     elif data['dataType'] not in valid_types:
+#         raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
+
 def check_dataframe_input(data, boxType):
     if isinstance(data, list):
         return
-    if data['dataType'] == 'outputs' and len(data['data']) > 5:
+        
+    # NEW: If it is already a raw DataFrame, it is instantly valid!
+    if isinstance(data, (pd.DataFrame, gpd.GeoDataFrame)):
+        return 
+
+    # Legacy dictionary checks
+    if data.get('dataType') == 'outputs' and len(data.get('data', [])) > 5:
         raise Exception(f'{boxType} only supports five inputs')
 
     valid_types = {'dataframe', 'geodataframe'}
-    if data['dataType'] == 'outputs':
-        for elem in data['data']:
-            if elem['dataType'] not in valid_types:
+    if data.get('dataType') == 'outputs':
+        for elem in data.get('data', []):
+            if elem.get('dataType') not in valid_types:
                 raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
-    elif data['dataType'] not in valid_types:
+    elif data.get('dataType') not in valid_types:
         raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
 
+
 def check_transformation_input(data, boxType):
+    if isinstance(data, list):
+        return
+        
+    # NEW: If it is already a raw DataFrame or Raster, it is instantly valid!
+    if isinstance(data, (pd.DataFrame, gpd.GeoDataFrame)):
+        return 
+    # (Assuming rasterio is imported as rasterio in your parsers file)
+    # import rasterio
+    if isinstance(data, rasterio.io.DatasetReader):
+        return
+
+    # Legacy dictionary checks
     valid_types = {'dataframe', 'geodataframe', 'raster'}
-    if data['dataType'] == 'outputs' and len(data['data']) > 2:
+    if data.get('dataType') == 'outputs' and len(data.get('data', [])) > 2:
         raise Exception(f'{boxType} only supports one or two inputs')
 
-    if data['dataType'] == 'outputs':
-        for elem in data['data']:
-            if elem['dataType'] not in valid_types:
+    if data.get('dataType') == 'outputs':
+        for elem in data.get('data', []):
+            if elem.get('dataType') not in valid_types:
                 raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
-    elif data['dataType'] not in valid_types:
+    elif data.get('dataType') not in valid_types:
         raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
+
 
 def check_valid_output(data, boxType):
     if isinstance(data, list):
@@ -154,13 +200,30 @@ def save_memory_mapped_file(data):
     # Extract the actual payload from the wrapper dictionary
     payload = data.get('data') if isinstance(data, dict) and 'data' in data else data
 
+    # # 1. PARQUET EXPORT: If payload is tabular, save it as Parquet
+    # if isinstance(payload, (pd.DataFrame, gpd.GeoDataFrame)):
+    #     unique_filename = f"{timestamp}_output.parquet"
+    #     full_path = save_dir / unique_filename
+        
+    #     # Save the DataFrame to Parquet
+    #     payload.to_parquet(full_path, engine='pyarrow', index=False)
     # 1. PARQUET EXPORT: If payload is tabular, save it as Parquet
     if isinstance(payload, (pd.DataFrame, gpd.GeoDataFrame)):
         unique_filename = f"{timestamp}_output.parquet"
         full_path = save_dir / unique_filename
         
-        # Save the DataFrame to Parquet
-        payload.to_parquet(full_path, engine='pyarrow', index=False)
+        try:
+            # Attempt to save the DataFrame to Parquet natively
+            payload.to_parquet(full_path, engine='pyarrow', index=False)
+        except Exception as e:
+            # Fallback: PyArrow strictly enforces column types.
+            # If a user's code mixes types (like putting a 0 in a string column),
+            # we coerce all object columns to strings so the system doesn't crash.
+            for col in payload.select_dtypes(include=['object']).columns:
+                payload[col] = payload[col].astype(str)
+                
+            # Try saving again
+            payload.to_parquet(full_path, engine='pyarrow', index=False)
 
     # 2. JSON EXPORT: If data is a dict (metadata, vega specs), save as JSON
     elif isinstance(data, dict):
