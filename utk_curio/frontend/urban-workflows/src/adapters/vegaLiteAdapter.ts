@@ -13,6 +13,43 @@ import { fetchData } from '../services/api';
 const vega = require('vega');
 const lite = require('vega-lite');
 
+// async function parseInputData(input: any): Promise<any[]> {
+//   if (!input || input === '') {
+//     throw new Error('Input data must be provided');
+//   }
+
+//   const inputType = input.dataType;
+//   if (inputType !== 'dataframe' && inputType !== 'geodataframe') {
+//     throw new Error(`${inputType} is not a valid input type for Vega-Lite`);
+//   }
+
+//   const parserMap: Record<string, (data: any) => any> = {
+//     dataframe: parseDataframe,
+//     geodataframe: parseGeoDataframe,
+//   };
+
+//   // const parser = parserMap[inputType];
+//   // if (!parser) return [];
+
+//   // if (input.path) {
+//   //   const fetched = await fetchData(input.path);
+//   //   return parser(fetched.data);
+//   // }
+//   // return parser(input.data);
+//   const parser = parserMap[inputType];
+//   if (!parser) return [];
+
+//   // --- NEW: Detect if the data payload is a Parquet path string ---
+//   const isDataPath = typeof input.data === 'string';
+//   const pathToFetch = isDataPath ? input.data : input.path;
+
+//   if (pathToFetch) {
+//     const fetched = await fetchData(pathToFetch);
+//     return parser(fetched.data !== undefined ? fetched.data : fetched);
+//   }
+  
+//   return parser(input.data);
+// }
 async function parseInputData(input: any): Promise<any[]> {
   if (!input || input === '') {
     throw new Error('Input data must be provided');
@@ -28,14 +65,23 @@ async function parseInputData(input: any): Promise<any[]> {
     geodataframe: parseGeoDataframe,
   };
 
-  const parser = parserMap[inputType];
-  if (!parser) return [];
+  const isDataPath = typeof input.data === 'string';
+  const pathToFetch = isDataPath ? input.data : input.path;
 
-  if (input.path) {
-    const fetched = await fetchData(input.path);
-    return parser(fetched.data);
+  if (pathToFetch) {
+    // Pass 'true' so the Arrow IPC parses directly to an array of row objects
+    const fetched = await fetchData(pathToFetch, true);
+    
+    if (Array.isArray(fetched)) return fetched;
+
+    // Fallback for legacy JSON
+    const parser = parserMap[inputType];
+    return parser ? parser(fetched.data !== undefined ? fetched.data : fetched) : [];
   }
-  return parser(input.data);
+
+  // Fallback for legacy inline JSON
+  const parser = parserMap[inputType];
+  return parser ? parser(input.data) : [];
 }
 
 export const vegaLiteAdapter: GrammarAdapter = {

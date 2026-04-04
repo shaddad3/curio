@@ -55,20 +55,45 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
     //   }
     // }
 
+    // const parserMap = {
+    //   "dataframe": parseDataframe,
+    //   "geodataframe": parseGeoDataframe,
+    // };
+
+    // const parser = parserMap[parsedInput.dataType as keyof typeof parserMap];
+
+    // if (parser) {
+    //   if (parsedInput.path) {
+    //     values = await fetchData(parsedInput.path);
+    //     values = parser(values.data);
+    //   } else {
+    //     values = parser(parsedInput.data);
+    //   }
+    // }
     const parserMap = {
       "dataframe": parseDataframe,
       "geodataframe": parseGeoDataframe,
     };
 
-    const parser = parserMap[parsedInput.dataType as keyof typeof parserMap];
+    const isDataPath = typeof parsedInput.data === 'string';
+    const pathToFetch = isDataPath ? parsedInput.data : parsedInput.path;
 
-    if (parser) {
-      if (parsedInput.path) {
-        values = await fetchData(parsedInput.path);
-        values = parser(values.data);
+    if (pathToFetch) {
+      // Pass 'true' so the Arrow IPC parses directly to an array of row objects
+      let fetched = await fetchData(pathToFetch, true);
+      
+      // If Arrow handled it, it's already perfectly formatted for Vega
+      if (Array.isArray(fetched)) {
+        values = fetched;
       } else {
-        values = parser(parsedInput.data);
+        // Fallback for legacy JSON
+        const parser = parserMap[parsedInput.dataType as keyof typeof parserMap];
+        if (parser) values = parser(fetched.data !== undefined ? fetched.data : fetched);
       }
+    } else {
+      // Fallback for legacy inline JSON
+      const parser = parserMap[parsedInput.dataType as keyof typeof parserMap];
+      if (parser) values = parser(parsedInput.data);
     }
 
     // if (parsedInput.dataType == "dataframe") {
