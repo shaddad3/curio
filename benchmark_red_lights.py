@@ -64,7 +64,7 @@ if __name__ == '__main__':
             'Value': range(100_000)
         })
     else:
-        print(f"Loading real-world dataset from ZIP: {DATA_PATH}")
+        print(f"Loading Red-light Violation dataset from ZIP: {DATA_PATH}")
         # Pandas handles zip extraction natively if it contains a single CSV
         df_real = pd.read_csv(DATA_PATH, compression='zip')
         

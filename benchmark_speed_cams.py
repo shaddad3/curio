@@ -51,21 +51,32 @@ def new_system_filtered(df, col, val):
 # BENCHMARK EXECUTION (Guarded to prevent multiprocessing bugs)
 # =========================================================
 if __name__ == '__main__':
-    # Switch to the larger dataset to see the system scale
-    DATA_PATH = "docs/examples/data/Energy_Usage_5000.csv" 
-    FILTER_COLUMN = "BUILDING TYPE" 
-    FILTER_VALUE = 'Commercial'
-
+    # Switch to one of the larger ZIPPED datasets
+    DATA_PATH = "docs/examples/data/Speed_Camera_Violations.zip" 
+    
     if not os.path.exists(DATA_PATH):
         print(f"Cannot find {DATA_PATH}. Falling back to generating dummy data.")
-        # Fallback to a large dummy dataset if CSV isn't found
+        # Fallback to a large dummy dataset if ZIP isn't found
+        FILTER_COLUMN = 'Category'
+        FILTER_VALUE = 'A'
         df_real = pd.DataFrame({
-            FILTER_COLUMN: ['Commercial' if i % 2 == 0 else 'Residential' for i in range(100_000)],
+            FILTER_COLUMN: ['A' if i % 2 == 0 else 'B' for i in range(100_000)],
             'Value': range(100_000)
         })
     else:
-        print(f"Loading Energy Usage dataset: {DATA_PATH}")
-        df_real = pd.read_csv(DATA_PATH)
+        print(f"Loading Speed Camaera Violations dataset from ZIP: {DATA_PATH}")
+        # Pandas handles zip extraction natively if it contains a single CSV
+        df_real = pd.read_csv(DATA_PATH, compression='zip')
+        
+        # Dynamically select a filter column and value to ensure it works 
+        # regardless of whether you load Speed Cameras or Red Light Violations
+        FILTER_COLUMN = df_real.columns[0]
+        # .item() safely converts numpy scalar types to native python types for DuckDB
+        FILTER_VALUE = df_real[FILTER_COLUMN].dropna().iloc[0]
+        if hasattr(FILTER_VALUE, 'item'):
+            FILTER_VALUE = FILTER_VALUE.item() 
+            
+        print(f"Dynamically testing filter pushdown using: {FILTER_COLUMN} = {FILTER_VALUE}")
         
     print(f"Dataset Shape: {df_real.shape}")
     print("-" * 50)
@@ -111,7 +122,6 @@ if __name__ == '__main__':
 
     # --- 4. Peak Memory Consumption ---
     print("--- PEAK MEMORY CONSUMPTION ---")
-    # Because of the __name__ == '__main__' guard, this will now work perfectly
     mem_old = memory_usage((old_system_full_transfer, (df_real,)), max_usage=True)
     mem_new = memory_usage((new_system_full_transfer, (df_real,)), max_usage=True)
 
