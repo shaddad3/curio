@@ -39,7 +39,7 @@ if __name__ == '__main__':
     print(f"Loaded Full Dataset: {df_full.shape[0]} rows, {df_full.shape[1]} columns\n")
     
     # We will test the systems at these row thresholds to find the crossover
-    test_sizes = [50, 100, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000]
+    test_sizes = [50, 100, 200, 300, 400, 500, 750, 1000, 1250, 1500, 1750, 2000, 3000, 5000]
     
     crossover_found = False
 
