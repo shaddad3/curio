@@ -84,7 +84,11 @@ interface FlowContextProps {
     loading: boolean;
 
     applyRemoveChanges: (changes: NodeRemoveChange[]) => void;
-    loadParsedTrill: (workflowName: string, task: string, node: any, edges: any, provenance?: boolean, merge?: boolean) => void;
+    loadParsedTrill: (workflowName: string, task: string, node: any, edges: any, provenance?: boolean, merge?: boolean, packages?: string[]) => void;
+    packages: string[];
+    setPackages: (pkgs: string[]) => void;
+    addPackage: (pkg: string) => void;
+    removePackage: (pkg: string) => void;
     updateDataNode: (nodeId: string, newData: any) => void;
     updateWarnings: (trill_spec: any) => void;
     updateDefaultCode: (nodeId: string, content: string) => void;
@@ -173,7 +177,11 @@ export const FlowContext = createContext<FlowContextProps>({
     updateWarnings: () => {},
     cleanCanvas: () => {},
     acceptSuggestion: () => {},
-    loadParsedTrill: async () => { }
+    loadParsedTrill: async () => { },
+    packages: [],
+    setPackages: () => {},
+    addPackage: () => {},
+    removePackage: () => {},
 });
 
 const FlowProvider = ({ children }: { children: ReactNode }) => {

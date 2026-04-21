@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
-import { FileUpload, TrillProvenanceWindow, DatasetsWindow, Expand } from "components/menus";
-import { useNodeActionsContext } from "../../../providers/FlowProvider";
+import { FileUpload, TrillProvenanceWindow, DatasetsWindow, Expand, PackageManagerWindow } from "components/menus";
+import { useNodeActionsContext, useFlowContext } from "../../../providers/FlowProvider";
 import { useReactFlow } from "reactflow";
 import { useCode } from "../../../hook/useCode";
 import { TrillGenerator } from "../../../TrillGenerator";
@@ -31,9 +31,11 @@ export default function UpMenu({
     const [trillProvenanceOpen, setTrillProvenanceOpen] = useState(false);
     const [tutorialOpen, setTutorialOpen] = useState(false);
     const [datasetsOpen, setDatasetsOpen] = useState(false);
+    const [packagesOpen, setPackagesOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     const { workflowNameRef, workflowName, setWorkflowName } = useNodeActionsContext();
+    const { packages } = useFlowContext();
     const { getNodes, getEdges } = useReactFlow();
     const { loadTrill } = useCode();
 
@@ -81,7 +83,7 @@ export default function UpMenu({
     //James new defintions end
 
     const exportTrill = (e:any) => {
-        let trill_spec = TrillGenerator.generateTrill(getNodes(), getEdges(), workflowNameRef.current);
+        let trill_spec = TrillGenerator.generateTrill(getNodes(), getEdges(), workflowNameRef.current, "", packages);
         
         const jsonString = JSON.stringify(trill_spec, null, 2);
 
@@ -261,6 +263,7 @@ export default function UpMenu({
                         Dashboard Mode
                 </button>
                 <button className={styles.button} onClick={openTrillProvenanceModal}>Provenance</button>
+                <button className={styles.button} onClick={() => setPackagesOpen(true)}>Packages</button>
                 <button className={styles.button} onClick={openTutorial}>Tutorial</button>
                 <span className={styles.aiToggleText}>Urbanite</span>
                 <div className="form-check form-switch">
@@ -301,9 +304,14 @@ export default function UpMenu({
                 workflowName={workflowName}
             />
             {/* Datasets Modal */}
-            <DatasetsWindow 
+            <DatasetsWindow
                 open={datasetsOpen}
                 closeModal={closeDatasetsModal}
+            />
+            {/* Packages Modal */}
+            <PackageManagerWindow
+                open={packagesOpen}
+                closeModal={() => setPackagesOpen(false)}
             />
         </>
 

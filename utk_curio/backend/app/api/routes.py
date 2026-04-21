@@ -479,6 +479,19 @@ def process_python_code():
     finally:
         pass
 
+@bp.route('/installPackages', methods=['POST'])
+def install_packages():
+    packages = request.json.get('packages', [])
+    try:
+        response = requests.post(
+            api_address + ":" + str(api_port) + "/install",
+            data=json.dumps({"packages": packages}),
+            headers={"Content-Type": "application/json"},
+        )
+        return response.json()
+    finally:
+        pass
+
 @bp.route('/toLayers', methods=['POST'])
 def toLayers():
 

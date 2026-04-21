@@ -57,6 +57,15 @@ export function useWorkflowOperations(deps: WorkflowOperationsDeps) {
     const [expandStatus, setExpandStatus] = useState<'expanded' | 'minimized'>('expanded');
     const [suggestionsLeft, setSuggestionsLeft] = useState<number>(0); // Number of suggestions left
     const [workflowGoal, setWorkflowGoal] = useState("");
+    const [packages, setPackages] = useState<string[]>([]);
+
+    const addPackage = useCallback((pkg: string) => {
+        setPackages((prev) => prev.includes(pkg) ? prev : [...prev, pkg]);
+    }, []);
+
+    const removePackage = useCallback((pkg: string) => {
+        setPackages((prev) => prev.filter((p) => p !== pkg));
+    }, []);
 
     // ---------------------------------------------------------------------------
     // Effects
@@ -89,13 +98,14 @@ export function useWorkflowOperations(deps: WorkflowOperationsDeps) {
         setNodes((prevNodes: Node[]) => updateNodeData(prevNodes, nodeId, () => ({ ...newData })));
     }, [setNodes]);
 
-    const loadParsedTrill = async (workflowName: string, task: string, loaded_nodes: any, loaded_edges: any, provenance?: boolean, merge?: boolean) => {
+    const loadParsedTrill = async (workflowName: string, task: string, loaded_nodes: any, loaded_edges: any, provenance?: boolean, merge?: boolean, incomingPackages?: string[]) => {
         if (!merge) {
             TrillGenerator.reset();
             setWorkflowName(workflowName);
             await addWorkflow(workflowName);
             const empty_trill = TrillGenerator.generateTrill([], [], workflowName);
             TrillGenerator.intializeProvenance(empty_trill);
+            setPackages(incomingPackages || []);
             console.log("loadParsedTrill reseting nodes");
             setNodes(() => []);
         }
@@ -216,6 +226,7 @@ export function useWorkflowOperations(deps: WorkflowOperationsDeps) {
         setPositionsInDashboard({});
         setPositionsInWorkflow({});
         setSuggestionsLeft(0);
+        setPackages([]);
     }
 
     const applyRemoveChanges = useCallback((changes: NodeRemoveChange[]) => {
@@ -403,6 +414,10 @@ export function useWorkflowOperations(deps: WorkflowOperationsDeps) {
         suggestionsLeft,
         workflowGoal,
         setWorkflowGoal,
+        packages,
+        setPackages,
+        addPackage,
+        removePackage,
 
         // Operations
         updateDataNode,
