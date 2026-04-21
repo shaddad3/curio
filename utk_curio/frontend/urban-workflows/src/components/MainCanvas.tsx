@@ -427,7 +427,6 @@ export function MainCanvas() {
                 isValidConnection={isValidConnection}
                 connectionMode={ConnectionMode.Loose}
                 minZoom={0.05}
-                fitView
                 onlyRenderVisibleElements
                 translateExtent={CANVAS_EXTENT}
             >

@@ -110,7 +110,7 @@ class TestWorkflowCanvas:
             result_span = node_el.locator("span").filter(
                 has_text=re.compile(r"^(Done|Error)$")
             ).first
-            result_span.wait_for(state="visible", timeout=120000)
+            result_span.wait_for(state="visible", timeout=30000)
             result_text = result_span.text_content() or ""
             assert "Error" not in result_text, (
                 f"Node {node.id} ({node.type}) execution failed with Error"
@@ -121,21 +121,12 @@ class TestWorkflowCanvas:
                 f"Node {node.id} ({node.type}) did not produce 'Done'"
             )
 
-            # wait for output tab to be visible
-            output_tab = node_el.locator(
-                '.nav-link[data-rr-ui-event-key="output"]'
-            )
-            output_tab.first.wait_for(state="visible", timeout=10000)
-            assert output_tab.count() >= 1, (
-                f"Code node {node.id} ({node.type}) is missing its "
-                f"output tab"
-            )
-            if output_tab.count() >= 1:
-                # Check if the output content box is active
-                is_active = "active" in (output_tab.get_attribute("class") or "")
-                assert is_active, (
-                    f"Output content box {node.id} ({node.type}) is not active"
-                )
+            # verify the inline output area shows a Jupyter-style counter (code nodes only)
+            if node.category == "code":
+                output_area = node_el.locator(".nowheel.nodrag").filter(
+                    has_text=re.compile(r"\[\d+\]:")
+                ).first
+                output_area.wait_for(state="visible", timeout=10000)
         self.__class__._executed_workflow = self.spec.filepath
 
     # -- 1. Node & edge counts --------------------------------------------
@@ -209,77 +200,22 @@ class TestWorkflowCanvas:
 
             if node.category == "code":
 
-                # 1. Check if the output tab is present (always rendered in NodeEditor)
-                output_tab = node_el.locator(
-                    '.nav-link[data-rr-ui-event-key="output"]'
+                # 1. Check that the inline output area (below the Monaco editor)
+                #    is present and shows the initial "No output yet" placeholder.
+                output_area = node_el.locator(".nowheel.nodrag").filter(
+                    has_text=re.compile(r"\[[ ]\]:")
                 )
-
-                assert output_tab.count() >= 1, (
+                assert output_area.count() >= 1, (
                     f"Code node {node.id} ({node.type}) is missing its "
-                    f"output tab"
+                    f"inline output area"
                 )
-                if output_tab.count() >= 1:
-                    # Check if the output content box is active
-                    is_active = "active" in (output_tab.get_attribute("class") or "")
-                    assert is_active, (
-                        f"Output content box {node.id} ({node.type}) is not active"
-                    )
-                    if not is_active:
-                        output_tab.click(force=True)
-                        output_tab.wait_for(state="visible", timeout=3000)
-                    
-                    # OutputContent renders #computation-tabs-tab- with
-                    # Output / Error / Warning sub-tabs.
-                    computation_tabs = node_el.locator(f"#computation-tabs-tab-0")
-
-                    if computation_tabs.count() >= 1:
-                        # and should contain a div with classes tab-pane and active
-                        active_pane = node_el.locator(".tab-pane.active")
-                        assert active_pane.count() >= 1, (
-                            f"Code node {node.id} ({node.type}) output "
-                            f"area has no active tab-pane"
-                        )
-                        # the output tab content has class tab-content
-                        tab_content = active_pane.locator(".tab-content")
-                        # wait for the tab-content to be visible
-                        tab_content.wait_for(state="visible", timeout=3000)
-                        assert tab_content.count() >= 1, (
-                            f"Code node {node.id} ({node.type}) output "
-                            f"area is missing .tab-content"
-                        )
-                        # and should contain a title h6 with text "Output"
-                        output_heading = tab_content.locator("h6").filter(
-                            has_text="Output"
-                        )
-                        assert output_heading.count() >= 1, (
-                            f"Code node {node.id} ({node.type}) active "
-                            f"output pane is missing 'Output' heading"
-                        )
-                        # and should contain a div below the h6 with
-                        # text "No output available."
-                        no_output_msg = tab_content.locator("div").filter(
-                            has_text="No output available."
-                        )
-                        assert no_output_msg.count() >= 1, (
-                            f"Code node {node.id} ({node.type}) active "
-                            f"output pane is missing 'No output available.'"
-                        )
-                        # and should not contain a title h6 with text "Error"
-                        error_heading = tab_content.locator("h6").filter(
-                            has_text="Error"
-                        )
-                        assert error_heading.count() == 0, (
-                            f"Code node {node.id} ({node.type}) active "
-                            f"output pane should not contain 'Error' heading"
-                        )
-                        # and should not contain a title h6 with text "Warning"
-                        warning_heading = tab_content.locator("h6").filter(
-                            has_text="Warning"
-                        )
-                        assert warning_heading.count() == 0, (
-                            f"Code node {node.id} ({node.type}) active "
-                            f"output pane should not contain 'Warning' heading"
-                        )
+                no_output_text = node_el.locator(".nowheel.nodrag").filter(
+                    has_text="No output yet"
+                )
+                assert no_output_text.count() >= 1, (
+                    f"Code node {node.id} ({node.type}) inline output area "
+                    f"is missing 'No output yet' placeholder"
+                )
                 
                 if node.type in CODE_EDITOR_TYPES:
                     # 2. Check if the code tab is rendered
