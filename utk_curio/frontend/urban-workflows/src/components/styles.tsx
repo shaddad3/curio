@@ -2,8 +2,8 @@ import React, { ReactNode, useState, useEffect } from "react";
 import CSS from "csstype";
 import { Dropdown, Spinner } from "react-bootstrap";
 
-import { useFlowContext } from "../providers/FlowProvider";
-import { Box, NodeRemoveChange } from "reactflow";
+import { useNodeActionsContext } from "../providers/FlowProvider";
+import { NodeRemoveChange, useReactFlow } from "reactflow";
 
 import { CommentsList, IComment } from "./comments/CommentsList";
 import { useRightClickMenu } from "../hook/useRightClickMenu";
@@ -16,6 +16,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { useUserContext } from "../providers/UserProvider";
 import { useLLMContext } from "../providers/LLMProvider";
+import { useToastContext } from "../providers/ToastProvider";
 import { ConnectionValidator } from "../ConnectionValidator";
 import Col from "react-bootstrap/Col";
 import Nav from "react-bootstrap/Nav";
@@ -48,7 +49,7 @@ import {
     faXmark,
     faAnglesUp
 } from "@fortawesome/free-solid-svg-icons";
-import { AccessLevelType, BoxType, SupportedType } from "../constants";
+import { AccessLevelType, NodeType, SupportedType } from "../constants";
 import { getNodeDescriptor } from "../registry";
 import "./styles.css";
 import { Template, useTemplateContext } from "../providers/TemplateProvider";
@@ -56,8 +57,8 @@ import { useCode } from "../hook/useCode";
 import { TrillGenerator } from "TrillGenerator";
 import { ICodeData } from "types";
 
-// Box Container
-export const BoxContainer = ({
+// Node Container
+export const NodeContainer = ({
     data,
     children,
     nodeId,
@@ -70,8 +71,8 @@ export const BoxContainer = ({
     setOutputCallback,
     sendCodeToWidgets,
     output,
-    boxWidth,
-    boxHeight,
+    nodeWidth,
+    nodeHeight,
     noContent,
     setTemplateConfig,
     disableComments = false,
@@ -92,8 +93,8 @@ export const BoxContainer = ({
     setOutputCallback: any;
     sendCodeToWidgets?: any;
     output?: ICodeData;
-    boxWidth?: number;
-    boxHeight?: number;
+    nodeWidth?: number;
+    nodeHeight?: number;
     noContent?: boolean;
     setTemplateConfig?: any;
     disableComments?: boolean;
@@ -102,11 +103,10 @@ export const BoxContainer = ({
     isLoading?: boolean;
     handleType?: string;
 }) => {
-    const { 
-        nodes, 
-        edges, 
-        workflowNameRef, 
-        applyRemoveChanges, 
+    const { showToast } = useToastContext();
+    const {
+        workflowNameRef,
+        applyRemoveChanges,
         setPinForDashboard,
         allMinimized,
         setExpandStatus,
@@ -114,7 +114,8 @@ export const BoxContainer = ({
         updateDefaultCode,
         workflowGoal,
         acceptSuggestion
-    } = useFlowContext();
+    } = useNodeActionsContext();
+    const { getNodes, getEdges } = useReactFlow();
     const { getTemplates, deleteTemplate, fetchTemplates } = useTemplateContext();
     const { createCodeNode, loadTrill } = useCode();
     const [showComments, setShowComments] = useState(false);
@@ -127,15 +128,15 @@ export const BoxContainer = ({
     const [isConnectionRightOpen, setIsConnectionRightOpen] = useState(false);
     const [showWarnings, setShowWarnings] = useState<boolean>(false);
     const [isSubtasksOpen, setIsSubtasksOpen] = useState(false);
-    const [currentBoxWidth, setCurrentBoxWidth] = useState<number | undefined>(
-        boxWidth
+    const [currentNodeWidth, setCurrentNodeWidth] = useState<number | undefined>(
+        nodeWidth
     );
-    const [currentBoxHeight, setCurrentBoxHeight] = useState<
+    const [currentNodeHeight, setCurrentNodeHeight] = useState<
         number | undefined
-    >(boxHeight);
+    >(nodeHeight);
     const { showMenu, menuPosition, onContextMenu } = useRightClickMenu();
     const [minimized, setMinimized] = useState(
-        data.nodeType == BoxType.MERGE_FLOW
+        data.nodeType == NodeType.MERGE_FLOW
     );
     const { openAIRequest, setCurrentEventPipeline, AIModeRef } = useLLMContext();
 
@@ -178,7 +179,7 @@ export const BoxContainer = ({
     }, [data.output, data.input])
 
     useEffect(() => {
-        if(data.nodeType != BoxType.MERGE_FLOW){
+        if(data.nodeType != NodeType.MERGE_FLOW){
             if(allMinimized > 0){
                 setMinimized(true);
             }else{
@@ -188,21 +189,21 @@ export const BoxContainer = ({
     }, [allMinimized])
 
     useEffect(() => {
-        if (data.nodeType != BoxType.MERGE_FLOW) {
+        if (data.nodeType != NodeType.MERGE_FLOW) {
             if (minimized) {
-                setCurrentBoxWidth(70);
-                setCurrentBoxHeight(40);
+                setCurrentNodeWidth(70);
+                setCurrentNodeHeight(40);
             } else {
-                if (boxWidth == undefined) {
-                    setCurrentBoxWidth(525);
+                if (nodeWidth == undefined) {
+                    setCurrentNodeWidth(525);
                 } else {
-                    setCurrentBoxWidth(boxWidth);
+                    setCurrentNodeWidth(nodeWidth);
                 }
 
-                if (boxHeight == undefined) {
-                    setCurrentBoxHeight(267);
+                if (nodeHeight == undefined) {
+                    setCurrentNodeHeight(350);
                 } else {
-                    setCurrentBoxHeight(boxHeight);
+                    setCurrentNodeHeight(nodeHeight);
                 }
             }
 
@@ -213,12 +214,12 @@ export const BoxContainer = ({
     }, [minimized]);
 
     useEffect(() => {
-        if (boxWidth == undefined) {
-            setCurrentBoxWidth(525);
+        if (nodeWidth == undefined) {
+            setCurrentNodeWidth(525);
         }
 
-        if (boxHeight == undefined) {
-            setCurrentBoxHeight(267);
+        if (nodeHeight == undefined) {
+            setCurrentNodeHeight(350);
         }
 
         const resizer = document.getElementById(
@@ -240,8 +241,8 @@ export const BoxContainer = ({
             resizable.style.width = newWidth + "px";
             resizable.style.height = newHeight + "px";
     
-            setCurrentBoxWidth(newWidth);
-            setCurrentBoxHeight(newHeight);
+            setCurrentNodeWidth(newWidth);
+            setCurrentNodeHeight(newHeight);
         }
 
         function initResize(e: any) {
@@ -273,7 +274,7 @@ export const BoxContainer = ({
         }
     }
 
-    const generateSubtaskFromExec = async (node_content: string, node_type: BoxType, current_task: string) => {
+    const generateSubtaskFromExec = async (node_content: string, node_type: NodeType, current_task: string) => {
         try {
             let result = await openAIRequest("default_preamble", "new_subtask_from_exec_prompt", " Node content: " + node_content + "\n" + "Node type: " + node_type + " Task: " + current_task);
             
@@ -285,7 +286,7 @@ export const BoxContainer = ({
             updateDataGoal(new_subtask);
         } catch (error) {
             console.error("Error communicating with LLM", error);
-            alert("Error communicating with LLM");
+            showToast("Error communicating with LLM", "error");
         }
     }
 
@@ -383,7 +384,7 @@ export const BoxContainer = ({
             loadTrill(parsed_result, "connection");
         } catch (error) {
             console.error("Error communicating with LLM", error);
-            alert("Error communicating with LLM");
+            showToast("Error communicating with LLM", "error");
         }
 
     }
@@ -415,7 +416,7 @@ export const BoxContainer = ({
 
             } catch (error) {
                 console.error("Error communicating with LLM", error);
-                alert("Error communicating with LLM");
+                showToast("Error communicating with LLM", "error");
             }
         }
 
@@ -423,17 +424,17 @@ export const BoxContainer = ({
 
     const clickGenerateContentNode = () => {
         setCurrentEventPipeline("Generate content for node");
-        generateContentNode(nodes, edges, workflowNameRef, goal, workflowGoal);
+        generateContentNode(getNodes(), getEdges(), workflowNameRef, goal, workflowGoal);
     }
 
-    const boxIconTranslation = (boxType: BoxType) => {
-        try { return getNodeDescriptor(boxType).icon; }
+    const nodeIconTranslation = (nodeType: NodeType) => {
+        try { return getNodeDescriptor(nodeType).icon; }
         catch { return faCopy; }
     };
 
-    const boxNameTranslation = (boxType: BoxType) => {
-        try { return getNodeDescriptor(boxType).label; }
-        catch { return boxType; }
+    const nodeNameTranslation = (nodeType: NodeType) => {
+        try { return getNodeDescriptor(nodeType).label; }
+        catch { return nodeType; }
     };
 
     return (
@@ -467,10 +468,10 @@ export const BoxContainer = ({
             }
 
             {!minimized && isSubtasksOpen ?
-                <div style={{...goalInput, ...(currentBoxWidth ? {width: (currentBoxWidth-4)+"px"} : {}), ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {opacity: "50%", pointerEvents: "none"} : {})}} className={"nodrag"}>
+                <div style={{...goalInput, ...(currentNodeWidth ? {width: (currentNodeWidth-4)+"px"} : {}), ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {opacity: "50%", pointerEvents: "none"} : {})}} className={"nodrag"}>
                     <label htmlFor={nodeId+"_goal_box_input"}>Subtask: </label>
                     <input id={nodeId+"_goal_box_input"} type={"text"} style={{width: "65%", border: "none", background: "transparent", color: "rgb(251, 252, 246)", borderBottom: "1px solid rgb(46, 91, 136)"}} value={goal} onBlur={() => {updateDataGoal(goal)}} onChange={(value: any) => {setGoal(value.target.value)}}/>
-                    {data.nodeType != BoxType.VIS_UTK ? <button style={buttonStyle} onClick={() => {
+                    {data.nodeType != NodeType.VIS_UTK ? <button style={buttonStyle} onClick={() => {
                         if(AIModeRef.current)
                             clickGenerateContentNode();
                     }} >Get code</button> : null}
@@ -526,7 +527,7 @@ export const BoxContainer = ({
                     icon={faCirclePlus} 
                     onClick={() => {
                         if(AIModeRef.current)
-                            generateConnectionSuggestions(nodes, edges, workflowNameRef, goal, "input")
+                            generateConnectionSuggestions(getNodes(), getEdges(), workflowNameRef, goal, "input")
                     }} /> : null
             }
 
@@ -552,7 +553,7 @@ export const BoxContainer = ({
             {!minimized && isConnectionRightOpen && (handleType == "in/out" || handleType == "out") && !(data.suggestionType != "none" && data.suggestionType != undefined) ?
                 <FontAwesomeIcon style={newOutConnectionStyle} icon={faCirclePlus} onClick={() => {
                     if(AIModeRef.current)
-                        generateConnectionSuggestions(nodes, edges, workflowNameRef, goal, "output")
+                        generateConnectionSuggestions(getNodes(), getEdges(), workflowNameRef, goal, "output")
                 }} /> : null
             }
 
@@ -567,10 +568,10 @@ export const BoxContainer = ({
                 id={nodeId + "resizable"}
                 className={"resizable"}
                 style={{
-                    ...boxContainerStyles,
+                    ...getNodeContainerStyles(data.nodeType),
                     ...styles,
-                    width: currentBoxWidth + "px",
-                    height: currentBoxHeight + "px",
+                    width: currentNodeWidth + "px",
+                    height: currentNodeHeight + "px",
                     ...(minimized ? { display: "none" } : {}),
                     ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {opacity: 0.5, borderWidth: "2px", borderStyle: "dashed", pointerEvents: "none"} : {}), 
                     ...(data.suggestionAcceptable ? {borderColor: "#1d3853"} : {}), 
@@ -579,118 +580,82 @@ export const BoxContainer = ({
                 onContextMenu={onContextMenu}
             >
                 {!noContent ? (
-                    <Row
-                        style={{
-                            width: "95%",
-                            height: "30px",
-                            marginBottom: "2px",
-                            paddingBottom: "2px",
-                            marginLeft: "auto",
-                            marginRight: "auto",
-                            borderBottom: "1px solid rgba(107, 107, 107, 0.3)",
-                        }}
-                    >
-                        <p
-                            style={{
-                                ...{
-                                    textAlign: "center",
-                                    marginBottom: 0,
-                                    fontSize: "12px",
-                                    fontWeight: "bold",
-                                    position: "fixed",
-                                    top: "10px",
-                                    left: 0,
-                                    color: "#888787",
-                                },
-                                ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "#888787"})
-                            }}
-                        >
-                            {boxNameTranslation(data.nodeType)}
-                            {templateData.name != undefined
-                                ? " - " + templateData.name
-                                : null}
-                        </p>
+                    <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        height: "30px",
+                        marginBottom: "2px",
+                        paddingBottom: "2px",
+                        borderBottom: "1px solid rgba(107, 107, 107, 0.3)",
+                        gap: "6px",
+                        padding: "0 4px 2px 4px",
+                        boxSizing: "border-box",
+                        width: "100%",
+                        ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
+                    }}>
+                        {/* Minimize toggle */}
+                        <FontAwesomeIcon
+                            icon={faMinus}
+                            style={{ ...headerIconStyle, flexShrink: 0, ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {}) }}
+                            title="Minimize"
+                            onClick={() => setMinimized(true)}
+                        />
 
-                        <ul
+                        {/* Node name — fills remaining space */}
+                        <span style={{
+                            flex: 1,
+                            textAlign: "center",
+                            fontSize: "12px",
+                            fontWeight: "bold",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            minWidth: 0,
+                            color: data.keywordHighlighted ? "rgb(251, 252, 246)" : "#888787",
+                        }}>
+                            {nodeNameTranslation(data.nodeType)}
+                            {templateData.name != undefined ? " · " + templateData.name : null}
+                        </span>
+
+                        {/* Right-side action icons */}
+                        {promptModal != undefined && templateData.id != undefined && templateData.custom ? (
+                            <FontAwesomeIcon
+                                icon={faGear}
+                                style={{ ...headerIconStyle, ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {}) }}
+                                title="Settings"
+                                onClick={() => promptModal()}
+                            />
+                        ) : null}
+                        <FontAwesomeIcon
+                            icon={pinnedToDashboard ? faCircleDot : faCircle}
                             style={{
-                                listStyle: "none",
-                                padding: 0,
-                                display: "flex",
-                                margin: 0,
-                                justifyContent: "flex-end",
-                                zIndex: 5,
+                                ...headerIconStyle,
+                                color: pinnedToDashboard ? "red" : (data.keywordHighlighted ? "rgb(251, 252, 246)" : "#888787"),
                             }}
-                        >
-                            {promptModal != undefined &&
-                            templateData.id != undefined &&
-                            templateData.custom ? (
-                                <li style={{ marginLeft: "10px" }}>
-                                    <FontAwesomeIcon
-                                        onClick={() => {
-                                            promptModal();
-                                        }}
-                                        icon={faGear}
-                                        style={iconStyle}
-                                    />
-                                </li>
-                            ) : null}
-                            <li style={{ marginLeft: "10px" }}>
-                                <FontAwesomeIcon
-                                    onClick={() => {
-                                        promptDescription();
-                                    }}
-                                    icon={faCircleInfo}
-                                    style={{
-                                        ...iconStyle,
-                                        ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "#888787"})
-                                    }}
-                                />
-                            </li>
-                            <li style={{ marginLeft: "10px" }}>
-                                <FontAwesomeIcon
-                                    icon={faComments}
-                                    style={{
-                                        ...iconStyle,
-                                        ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "#888787"})
-                                    }}
-                                    onClick={() =>
-                                        setShowComments(!showComments)
-                                    }
-                                />
-                            </li>
-                            <li style={{ marginLeft: "10px" }}>
-                                <FontAwesomeIcon
-                                    icon={faXmark}
-                                    style={{
-                                        ...iconStyle, 
-                                        ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "#888787"})
-                                    }}
-                                    onClick={onDelete}
-                                />
-                            </li>
-                            {updateTemplate != undefined &&
-                            code != undefined &&
-                            templateData.id != undefined &&
-                            templateData.custom &&
-                            code != templateData.code ? (
-                                <li style={{ marginLeft: "10px" }}>
-                                    <FontAwesomeIcon
-                                        icon={faFloppyDisk}
-                                        style={{
-                                            ...iconStyle, 
-                                            ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "#888787"})
-                                        }}
-                                        onClick={() => {
-                                            updateTemplate({
-                                                ...templateData,
-                                                code: code,
-                                            });
-                                        }}
-                                    />
-                                </li>
-                            ) : null}
-                        </ul>
-                    </Row>
+                            title={pinnedToDashboard ? "Unpin from dashboard" : "Pin to dashboard"}
+                            onClick={() => updatePin(nodeId, pinnedToDashboard)}
+                        />
+                        <FontAwesomeIcon
+                            icon={faComments}
+                            style={{ ...headerIconStyle, ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {}) }}
+                            title="Comments"
+                            onClick={() => setShowComments(!showComments)}
+                        />
+                        <FontAwesomeIcon
+                            icon={faXmark}
+                            style={{ ...headerIconStyle, ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {}) }}
+                            title="Delete node"
+                            onClick={onDelete}
+                        />
+                        {updateTemplate != undefined && code != undefined && templateData.id != undefined && templateData.custom && code != templateData.code ? (
+                            <FontAwesomeIcon
+                                icon={faFloppyDisk}
+                                style={{ ...headerIconStyle, ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {}) }}
+                                title="Save template"
+                                onClick={() => updateTemplate({ ...templateData, code: code })}
+                            />
+                        ) : null}
+                    </div>
                 ) : null}
 
                 <div style={{height: "calc(100% - 35px)", width: "calc(100% - 30px)", marginLeft: "auto", marginRight: "auto"}}>
@@ -813,7 +778,7 @@ export const BoxContainer = ({
                                             </Dropdown.Item>
 
                                             {getTemplates(
-                                                data.nodeType as BoxType,
+                                                data.nodeType as NodeType,
                                                 false
                                             ).length > 0 ? (
                                                 <>
@@ -829,7 +794,7 @@ export const BoxContainer = ({
                                                         Default Templates
                                                     </Dropdown.ItemText>
                                                     {getTemplates(
-                                                        data.nodeType as BoxType,
+                                                        data.nodeType as NodeType,
                                                         false
                                                     ).map(
                                                         (
@@ -870,7 +835,7 @@ export const BoxContainer = ({
                                             ) : null}
 
                                             {getTemplates(
-                                                data.nodeType as BoxType,
+                                                data.nodeType as NodeType,
                                                 true
                                             ).length > 0 ? (
                                                 <>
@@ -886,7 +851,7 @@ export const BoxContainer = ({
                                                         Custom Templates
                                                     </Dropdown.ItemText>
                                                     {getTemplates(
-                                                        data.nodeType as BoxType,
+                                                        data.nodeType as NodeType,
                                                         true
                                                     ).map(
                                                         (
@@ -956,47 +921,6 @@ export const BoxContainer = ({
                     ) : null}
                 </Row>
 
-                {pinnedToDashboard ? (
-                    <FontAwesomeIcon
-                        icon={faCircleDot}
-                        style={{
-                            ...{
-                                color: "red",
-                                cursor: "pointer",
-                                fontSize: "10px",
-                                position: "fixed",
-                                top: "12px",
-                                left: "10px",
-                                zIndex: 11,
-                            },
-                            ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
-                        }}
-                        onClick={() => {
-                            updatePin(nodeId, pinnedToDashboard);
-                        }}
-                    />
-                ) : (
-                    <FontAwesomeIcon
-                        style={{
-                            ...{
-                                color: "888",
-                                cursor: "pointer",
-                                fontSize: "10px",
-                                position: "fixed",
-                                top: "12px",
-                                left: "10px",
-                                zIndex: 11,
-                            },
-                            ...(data.keywordHighlighted ? {color: "rgb(251, 252, 246)"} : {color: "888"}),
-                            ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
-                        }}
-                        icon={faCircle}
-                        onClick={() => {
-                            updatePin(nodeId, pinnedToDashboard);
-                        }}
-                    />
-                )}
-
                 {
                     !(data.suggestionType != "none" && data.suggestionType != undefined) ?
                     <RightClickMenu
@@ -1020,30 +944,30 @@ export const BoxContainer = ({
                 <div
                     style={{
                         ...{
-                            width: currentBoxWidth + "px",
-                            height: currentBoxHeight + "px",
-                            backgroundColor: "white",
-                            boxShadow: "rgba(0, 0, 0, 0.35) 0px 5px 15px",
+                            width: currentNodeWidth + "px",
+                            height: currentNodeHeight + "px",
+                            backgroundColor: "#ffffff",
                             borderRadius: "10px",
                             padding: "5px",
                             justifyContent: "center",
                             display: "flex",
                             alignItems: "center",
+                            boxShadow: "rgba(0, 0, 0, 0.35) 0px 5px 15px",
                         },
                         ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
                     }}
                     onClick={() => {
-                        if (data.nodeType != BoxType.MERGE_FLOW) {
-                            if (boxWidth == undefined) {
-                                setCurrentBoxWidth(525);
+                        if (data.nodeType != NodeType.MERGE_FLOW) {
+                            if (nodeWidth == undefined) {
+                                setCurrentNodeWidth(525);
                             } else {
-                                setCurrentBoxWidth(boxWidth);
+                                setCurrentNodeWidth(nodeWidth);
                             }
 
-                            if (boxHeight == undefined) {
-                                setCurrentBoxHeight(267);
+                            if (nodeHeight == undefined) {
+                                setCurrentNodeHeight(350);
                             } else {
-                                setCurrentBoxHeight(boxHeight);
+                                setCurrentNodeHeight(nodeHeight);
                             }
 
                             setMinimized(false);
@@ -1051,7 +975,7 @@ export const BoxContainer = ({
                     }}
                 >
                     <FontAwesomeIcon
-                        icon={boxIconTranslation(data.nodeType)}
+                        icon={nodeIconTranslation(data.nodeType)}
                         style={{ 
                             ...iconStyle, 
                             fontSize: "23px",
@@ -1061,25 +985,19 @@ export const BoxContainer = ({
                 </div>
             ) : null}
 
-            <FontAwesomeIcon
-                icon={!minimized ? faMinus : faUpRightAndDownLeftFromCenter}
-                style={{
-                    ...iconStyle,
-                    position: "fixed",
-                    ...(minimized
-                        ? { top: "5px", left: "5px" }
-                        : { left: "50px", top: "12px" }),
-                    fontSize: "10px",
-                    zIndex: 8,
-                }}
-                onClick={() => {
-                    if (data.nodeType == BoxType.MERGE_FLOW) {
-                        setMinimized(true);
-                    } else {
-                        setMinimized(!minimized);
-                    }
-                }}
-            />
+            {noContent ? (
+                <FontAwesomeIcon
+                    icon={faUpRightAndDownLeftFromCenter}
+                    style={{
+                        ...headerIconStyle,
+                        position: "fixed",
+                        top: "5px",
+                        left: "5px",
+                        zIndex: 8,
+                    }}
+                    onClick={() => setMinimized(false)}
+                />
+            ) : null}
         </>
     );
 };
@@ -1090,13 +1008,40 @@ export const iconStyle: CSS.Properties = {
     color: "#888787",
 };
 
-const boxContainerStyles: CSS.Properties = {
+const headerIconStyle: CSS.Properties = {
+    cursor: "pointer",
+    fontSize: "11px",
+    color: "#888787",
+    flexShrink: 0,
+};
+
+const nodeTypeBorderColor: Record<string, string> = {
+    [NodeType.DATA_LOADING]: "#3498db",
+    [NodeType.DATA_EXPORT]: "#3498db",
+    [NodeType.DATA_CLEANING]: "#3498db",
+    [NodeType.DATA_TRANSFORMATION]: "#3498db",
+    [NodeType.DATA_SUMMARY]: "#3498db",
+    [NodeType.COMPUTATION_ANALYSIS]: "#8e44ad",
+    [NodeType.FLOW_SWITCH]: "#8e44ad",
+    [NodeType.MERGE_FLOW]: "#8e44ad",
+    [NodeType.DATA_POOL]: "#8e44ad",
+    [NodeType.CONSTANTS]: "#8e44ad",
+    [NodeType.VIS_UTK]: "#1abc9c",
+    [NodeType.VIS_VEGA]: "#1abc9c",
+    [NodeType.VIS_TABLE]: "#1abc9c",
+    [NodeType.VIS_TEXT]: "#1abc9c",
+    [NodeType.VIS_IMAGE]: "#1abc9c",
+    [NodeType.COMMENTS]: "#95a5a6",
+};
+
+const getNodeContainerStyles = (nodeType: string): CSS.Properties => ({
     position: "relative",
-    backgroundColor: "white",
-    boxShadow: "rgba(0, 0, 0, 0.35) 0px 5px 15px",
+    backgroundColor: "#ffffff",
+    borderLeft: `4px solid ${nodeTypeBorderColor[nodeType] ?? "#95a5a6"}`,
     borderRadius: "10px",
     padding: "5px",
-};
+    boxShadow: "rgba(0, 0, 0, 0.35) 0px 5px 15px",
+});
 
 export const RightClickMenu = ({
     showMenu,
@@ -1127,7 +1072,7 @@ export const RightClickMenu = ({
     );
 };
 
-const boxContentStyle: CSS.Properties = {
+const nodeContentStyle: CSS.Properties = {
     backgroundColor: "white",
 };
 

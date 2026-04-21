@@ -5,7 +5,7 @@ import { v4 as uuid } from "uuid";
 import { IInteraction, useFlowContext } from "../providers/FlowProvider";
 import { PythonInterpreter } from "../PythonInterpreter";
 import { usePosition } from "./usePosition";
-import { AccessLevelType, BoxType, EdgeType } from "../constants";
+import { AccessLevelType, NodeType, EdgeType } from "../constants";
 
 const pythonInterpreter = new PythonInterpreter();
 
@@ -27,7 +27,7 @@ type CreateCodeNodeOptions = {
 };
 
 interface IUseCode {
-    createCodeNode: (boxType: string, options?: CreateCodeNodeOptions) => void;
+    createCodeNode: (nodeType: string, options?: CreateCodeNodeOptions) => void;
     loadTrill: (trill: any, suggestionType?: string) => void;
 }
 
@@ -145,7 +145,7 @@ export function useCode(): IUseCode {
         }
 
         if(suggestionType == undefined)
-            loadParsedTrill(trill.dataflow.name, trill.dataflow.task, nodes, edges, true, false); 
+            loadParsedTrill(trill.dataflow.name, trill.dataflow.task, nodes, edges, true, false, trill.dataflow.packages || []);
         else if(suggestionType == "workflow")
             loadParsedTrill(trill.dataflow.name, trill.dataflow.task, nodes, edges, false, true); // if loading as suggestion deactivate provenance and merge
         else
@@ -153,7 +153,7 @@ export function useCode(): IUseCode {
 
     }
 
-    const generateCodeNode = useCallback((boxType: string, options: CreateCodeNodeOptions = {}) => {
+    const generateCodeNode = useCallback((nodeType: string, options: CreateCodeNodeOptions = {}) => {
         const {
             nodeId = uuid(),
             code = undefined,
@@ -173,7 +173,7 @@ export function useCode(): IUseCode {
 
         const node: Node = {
             id: nodeId,
-            type: boxType,
+            type: nodeType,
             position,
             data: {
                 nodeId: nodeId,
@@ -185,7 +185,7 @@ export function useCode(): IUseCode {
                 accessLevel,
                 warnings,
                 hidden: false,
-                nodeType: boxType,
+                nodeType: nodeType,
                 customTemplate,
                 suggestionType,
                 goal,
@@ -204,8 +204,8 @@ export function useCode(): IUseCode {
 
     }, [addNode, outputCallback, getPosition]);
 
-    const createCodeNode = useCallback((boxType: string, options: CreateCodeNodeOptions = {}) => {
-        let node = generateCodeNode(boxType, options);
+    const createCodeNode = useCallback((nodeType: string, options: CreateCodeNodeOptions = {}) => {
+        let node = generateCodeNode(nodeType, options);
         addNode(node, undefined, true);
     }, [addNode, outputCallback, getPosition]);
 

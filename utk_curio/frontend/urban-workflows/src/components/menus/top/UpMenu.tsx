@@ -1,14 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
-import CSS from "csstype";
-import { FileUpload, TrillProvenanceWindow, DatasetsWindow, Expand } from "components/menus";
-import { useFlowContext } from "../../../providers/FlowProvider";
+import { FileUpload, TrillProvenanceWindow, DatasetsWindow, Expand, PackageManagerWindow } from "components/menus";
+import { useNodeActionsContext, useFlowContext } from "../../../providers/FlowProvider";
+import { useReactFlow } from "reactflow";
 import { useCode } from "../../../hook/useCode";
 import { TrillGenerator } from "../../../TrillGenerator";
 import styles from "./UpMenu.module.css";
 import clsx from 'clsx';
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faDatabase, faFileImport, faFileExport } from "@fortawesome/free-solid-svg-icons";
-import logo from 'assets/curio.png';
+import logo from 'assets/curio-2.png';
 import introJs from 'intro.js';//new import
 import "intro.js/introjs.css";//this too
 
@@ -31,9 +31,12 @@ export default function UpMenu({
     const [trillProvenanceOpen, setTrillProvenanceOpen] = useState(false);
     const [tutorialOpen, setTutorialOpen] = useState(false);
     const [datasetsOpen, setDatasetsOpen] = useState(false);
+    const [packagesOpen, setPackagesOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
-    const { nodes, edges, workflowNameRef, setWorkflowName } = useFlowContext();
+    const { workflowNameRef, workflowName, setWorkflowName } = useNodeActionsContext();
+    const { packages } = useFlowContext();
+    const { getNodes, getEdges } = useReactFlow();
     const { loadTrill } = useCode();
 
     const fileButtonRef = useRef<HTMLButtonElement>(null);
@@ -80,7 +83,7 @@ export default function UpMenu({
     //James new defintions end
 
     const exportTrill = (e:any) => {
-        let trill_spec = TrillGenerator.generateTrill(nodes, edges, workflowNameRef.current);
+        let trill_spec = TrillGenerator.generateTrill(getNodes(), getEdges(), workflowNameRef.current, "", packages);
         
         const jsonString = JSON.stringify(trill_spec, null, 2);
 
@@ -260,6 +263,7 @@ export default function UpMenu({
                         Dashboard Mode
                 </button>
                 <button className={styles.button} onClick={openTrillProvenanceModal}>Provenance</button>
+                <button className={styles.button} onClick={() => setPackagesOpen(true)}>Packages</button>
                 <button className={styles.button} onClick={openTutorial}>Tutorial</button>
                 <span className={styles.aiToggleText}>Urbanite</span>
                 <div className="form-check form-switch">
@@ -277,7 +281,7 @@ export default function UpMenu({
                 {isEditing ? (
                     <input
                         type="text"
-                        value={workflowNameRef.current}
+                        value={workflowName}
                         onChange={handleNameChange}
                         onBlur={handleNameBlur}
                         onKeyPress={handleKeyPress}
@@ -289,20 +293,25 @@ export default function UpMenu({
                         className={styles.workflowNameStyle}
                         onClick={() => setIsEditing(true)}
                     >
-                        {workflowNameRef.current}
+                        {workflowName}
                     </h1>
                 )}
             </div>
             {/* Trill Provenance Modal */}
-            <TrillProvenanceWindow 
+            <TrillProvenanceWindow
                 open={trillProvenanceOpen}
                 closeModal={closeTrillProvenanceModal}
-                workflowName={workflowNameRef.current}
+                workflowName={workflowName}
             />
             {/* Datasets Modal */}
-            <DatasetsWindow 
+            <DatasetsWindow
                 open={datasetsOpen}
                 closeModal={closeDatasetsModal}
+            />
+            {/* Packages Modal */}
+            <PackageManagerWindow
+                open={packagesOpen}
+                closeModal={() => setPackagesOpen(false)}
             />
         </>
 

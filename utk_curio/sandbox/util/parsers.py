@@ -26,30 +26,30 @@ from pathlib import Path
 #     return parsedJson
 
 # I/O Type Checking
-def checkIOType(data, boxType, input=True):
+def checkIOType(data, nodeType, input=True):
     if input:
-        validate_input(data, boxType)
+        validate_input(data, nodeType)
     else:
-        validate_output(data, boxType)
+        validate_output(data, nodeType)
 
 
 # Input Validation
-def validate_input(data, boxType):
+def validate_input(data, nodeType):
     if isinstance(data, list):
         return
-    if boxType in ['DATA_EXPORT', 'DATA_CLEANING']:
-        check_dataframe_input(data, boxType)
-    elif boxType == 'DATA_TRANSFORMATION':
-        check_transformation_input(data, boxType)
+    if nodeType in ['DATA_EXPORT', 'DATA_CLEANING']:
+        check_dataframe_input(data, nodeType)
+    elif nodeType == 'DATA_TRANSFORMATION':
+        check_transformation_input(data, nodeType)
 
 # Output Validation
-def validate_output(data, boxType):
-    if boxType in ['DATA_LOADING', 'DATA_CLEANING', 'DATA_TRANSFORMATION']:
-        check_valid_output(data, boxType)
-    elif boxType == 'DATA_EXPORT':
+def validate_output(data, nodeType):
+    if nodeType in ['DATA_LOADING', 'DATA_CLEANING', 'DATA_TRANSFORMATION']:
+        check_valid_output(data, nodeType)
+    elif nodeType == 'DATA_EXPORT':
         if data.get('dataType') in ['', None]:
             return
-        raise Exception(f'{boxType} does not support output')
+        raise Exception(f'{nodeType} does not support output')
 
 
 # # Input Type Checks
@@ -79,7 +79,7 @@ def validate_output(data, boxType):
 #     elif data['dataType'] not in valid_types:
 #         raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
 
-def check_dataframe_input(data, boxType):
+def check_dataframe_input(data, nodeType):
     if isinstance(data, list):
         return
         
@@ -89,57 +89,55 @@ def check_dataframe_input(data, boxType):
 
     # Legacy dictionary checks
     if data.get('dataType') == 'outputs' and len(data.get('data', [])) > 5:
-        raise Exception(f'{boxType} only supports five inputs')
+        raise Exception(f'{nodeType} only supports five inputs')
 
     valid_types = {'dataframe', 'geodataframe'}
     if data.get('dataType') == 'outputs':
         for elem in data.get('data', []):
             if elem.get('dataType') not in valid_types:
-                raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
+                raise Exception(f'{nodeType} only supports DataFrame and GeoDataFrame as input')
     elif data.get('dataType') not in valid_types:
-        raise Exception(f'{boxType} only supports DataFrame and GeoDataFrame as input')
+        raise Exception(f'{nodeType} only supports DataFrame and GeoDataFrame as input')
 
 
-def check_transformation_input(data, boxType):
+def check_transformation_input(data, nodeType):
     if isinstance(data, list):
         return
         
     # NEW: If it is already a raw DataFrame or Raster, it is instantly valid!
     if isinstance(data, (pd.DataFrame, gpd.GeoDataFrame)):
         return 
-    # (Assuming rasterio is imported as rasterio in your parsers file)
-    # import rasterio
     if isinstance(data, rasterio.io.DatasetReader):
         return
 
     # Legacy dictionary checks
     valid_types = {'dataframe', 'geodataframe', 'raster'}
     if data.get('dataType') == 'outputs' and len(data.get('data', [])) > 2:
-        raise Exception(f'{boxType} only supports one or two inputs')
+        raise Exception(f'{nodeType} only supports one or two inputs')
 
     if data.get('dataType') == 'outputs':
         for elem in data.get('data', []):
             if elem.get('dataType') not in valid_types:
-                raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
+                raise Exception(f'{nodeType} only supports DataFrame, GeoDataFrame, and Raster as input')
     elif data.get('dataType') not in valid_types:
-        raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as input')
+        raise Exception(f'{nodeType} only supports DataFrame, GeoDataFrame, and Raster as input')
 
 
-def check_valid_output(data, boxType):
+def check_valid_output(data, nodeType):
     if isinstance(data, list):
         return
     valid_types = {'dataframe', 'geodataframe', 'raster'}
 
     if data['dataType'] == 'outputs':
-        if len(data['data']) > 1 and boxType != 'DATA_LOADING':
-            raise Exception(f'{boxType} only supports one output')
+        if len(data['data']) > 1 and nodeType != 'DATA_LOADING':
+            raise Exception(f'{nodeType} only supports one output')
 
         for elem in data['data']:
             if elem['dataType'] not in valid_types:
-                raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as output')
+                raise Exception(f'{nodeType} only supports DataFrame, GeoDataFrame, and Raster as output')
 
     elif data['dataType'] not in valid_types:
-        raise Exception(f'{boxType} only supports DataFrame, GeoDataFrame, and Raster as output')
+        raise Exception(f'{nodeType} only supports DataFrame, GeoDataFrame, and Raster as output')
 
 # def save_memory_mapped_file(data):
 #     """
@@ -398,11 +396,32 @@ def safe_json_loads(val):
         print("Exception in safe_json_loads", e)
     return val
 
+def _make_serializable(val):
+    """Recursively convert numpy/pandas types to native Python types."""
+    if isinstance(val, np.ndarray):
+        return [_make_serializable(v) for v in val.tolist()]
+    elif isinstance(val, (np.integer,)):
+        return int(val)
+    elif isinstance(val, (np.floating,)):
+        return float(val)
+    elif isinstance(val, (np.bool_,)):
+        return bool(val)
+    elif isinstance(val, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return val.isoformat()
+    elif isinstance(val, dict):
+        return {k: _make_serializable(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [_make_serializable(v) for v in val]
+    return val
+
+
 def fix_json_strings(gdf):
     gdf = gdf.copy()
     for col in gdf.columns:
         if col != 'geometry':
             gdf[col] = gdf[col].apply(safe_json_loads)
+            gdf[col] = gdf[col].apply(_make_serializable)
+
     return gdf
 
 # Output Functions

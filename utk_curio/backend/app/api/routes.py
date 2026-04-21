@@ -43,7 +43,7 @@ attributeIds = {
     "RASTER": "6"
 }
 
-# Fallback folder names for template types whose folder doesn't match box_type.lower()
+# Fallback folder names for template types whose folder doesn't match node_type.lower()
 # _FOLDER_OVERRIDES = {
 #     # "VIS_UTK": "utk",
 #     # "VIS_VEGA": "vega_lite",
@@ -67,20 +67,21 @@ _node_type_registry: dict = {
     "CONSTANTS":             {"inputTypes": [],                                                   "outputTypes": ["VALUE"]},
     "DATA_POOL":             {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
     "MERGE_FLOW":            {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"], "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
+    "DATA_SUMMARY":          {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["JSON"]},
 }
 
-def get_output_types(box_type: str) -> list:
-    entry = _node_type_registry.get(box_type)
+def get_output_types(node_type: str) -> list:
+    entry = _node_type_registry.get(node_type)
     return entry["outputTypes"] if entry else []
 
-def get_input_types(box_type: str) -> list:
-    entry = _node_type_registry.get(box_type)
+def get_input_types(node_type: str) -> list:
+    entry = _node_type_registry.get(node_type)
     return entry["inputTypes"] if entry else []
 
-def get_folder_for_type(box_type: str) -> str:
-    # if box_type in _FOLDER_OVERRIDES:
-    #     return _FOLDER_OVERRIDES[box_type]
-    return box_type.lower()
+def get_folder_for_type(node_type: str) -> str:
+    # if node_type in _FOLDER_OVERRIDES:
+    #     return _FOLDER_OVERRIDES[node_type]
+    return node_type.lower()
 
 def get_type_for_folder(folder: str) -> str:
     # for bt, f in _FOLDER_OVERRIDES.items():
@@ -91,8 +92,8 @@ def get_type_for_folder(folder: str) -> str:
 def get_template_folders() -> list:
     """Return all folder names that may contain templates."""
     folders = set()
-    for box_type in _node_type_registry:
-        folders.add(get_folder_for_type(box_type))
+    for node_type in _node_type_registry:
+        folders.add(get_folder_for_type(node_type))
     return sorted(folders)
 
 def get_db_path():
@@ -199,7 +200,7 @@ def register_node_types():
     payload = request.get_json(silent=True) or {}
     node_types = payload.get('nodeTypes', {})
     if not isinstance(node_types, dict) or len(node_types) == 0:
-        return jsonify({'error': 'Expected { nodeTypes: { BOX_TYPE: { inputTypes, outputTypes } } }'}), 400
+        return jsonify({'error': 'Expected { nodeTypes: { NODE_TYPE: { inputTypes, outputTypes } } }'}), 400
 
     _node_type_registry.clear()
     _node_type_registry.update(node_types)
@@ -507,12 +508,12 @@ def create_preview_data(data, max_rows=100):
 def process_python_code():
 
     code = request.json['code']
-    boxType = request.json['boxType']
+    nodeType = request.json['nodeType']
     input = {'path': "", 'dataType': ""}
     if(request.json['input']):
         req_input = request.json['input']
         if(req_input['dataType'] == 'outputs' and 'data' in req_input):
-            # Multiple outputs from a MergeFlowBox: 'data' is a list of output objects
+            # Multiple outputs from a MergeFlowNode: 'data' is a list of output objects
             input['path'] = req_input['data']
             input['dataType'] = 'outputs'
         elif('filename' in req_input):
@@ -528,7 +529,7 @@ def process_python_code():
                                 data=json.dumps({
                                     "code": code,
                                     "file_path": input['path'],
-                                    "boxType": boxType,
+                                    "nodeType": nodeType,
                                     "dataType": input['dataType']
                                 }),
                                 headers={"Content-Type": "application/json"},
@@ -544,6 +545,19 @@ def process_python_code():
             return {'stdout': stdout, 'stderr': stderr, 'input': input, 'output': output}
         finally:
             pass
+    finally:
+        pass
+
+@bp.route('/installPackages', methods=['POST'])
+def install_packages():
+    packages = request.json.get('packages', [])
+    try:
+        response = requests.post(
+            api_address + ":" + str(api_port) + "/install",
+            data=json.dumps({"packages": packages}),
+            headers={"Content-Type": "application/json"},
+        )
+        return response.json()
     finally:
         pass
 
@@ -797,8 +811,8 @@ def save_workflow_prov():
 
     return "",200
 
-@bp.route('/newBoxProv', methods=['POST'])
-def new_box_prov():
+@bp.route('/newNodeProv', methods=['POST'])
+def new_node_prov():
     data = request.json.get('data')
 
     # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
@@ -822,9 +836,9 @@ def new_box_prov():
     output_relation_id = cursor.lastrowid
     input_relation_id = cursor.lastrowid
 
-    boxType = data['activity_name'].split("-")[0]
+    nodeType = data['activity_name'].split("-")[0]
 
-    for outputType in get_output_types(boxType):
+    for outputType in get_output_types(nodeType):
         if outputType in attributeIds:
             cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
                 VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
@@ -860,10 +874,10 @@ def new_box_prov():
         # # id of the new just added relation
         # output_relation_id = cursor.lastrowid
 
-        boxType = activity[0].split("-")[0]
+        nodeType = activity[0].split("-")[0]
 
         # # adding a attributeRelation to each output type that this activity supports
-        # for outputType in get_output_types(boxType):
+        # for outputType in get_output_types(nodeType):
         #     if outputType in attributeIds:
         #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
         #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
@@ -899,8 +913,8 @@ def new_box_prov():
     # // TODO: new and duplicated activities can also be versioned by creating a new versioned element
     return "",200
 
-@bp.route('/deleteBoxProv', methods=['POST'])
-def delete_box_prov():
+@bp.route('/deleteNodeProv', methods=['POST'])
+def delete_node_prov():
     data = request.json.get('data')
 
     # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
@@ -910,7 +924,7 @@ def delete_box_prov():
 
     old_workflow_id, workflow_id = create_new_workflow_version(conn, data['workflow_name'])
 
-    # // duplicate all activities (but the excluded box) that point to the old workflow and point to the new one
+    # // duplicate all activities (but the excluded node) that point to the old workflow and point to the new one
 
     # getting all activities that point to the old workflow
     cursor.execute("SELECT activity_name, input_relation_id, output_relation_id, ve_id FROM activity WHERE workflow_id = ?", (old_workflow_id,))
@@ -938,10 +952,10 @@ def delete_box_prov():
             # # id of the new just added relation
             # output_relation_id = cursor.lastrowid
 
-            boxType = activity[0].split("-")[0]
+            nodeType = activity[0].split("-")[0]
 
             # # adding a attributeRelation to each output type that this activity supports
-            # for outputType in get_output_types(boxType):
+            # for outputType in get_output_types(nodeType):
             #     if outputType in attributeIds:
             #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
             #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
@@ -1090,10 +1104,10 @@ def delete_connection_prov():
         # # id of the new just added relation
         # output_relation_id = cursor.lastrowid
 
-        boxType = activity[0].split("-")[0]
+        nodeType = activity[0].split("-")[0]
 
         # # adding a attributeRelation to each output type that this activity supports
-        # for outputType in get_output_types(boxType):
+        # for outputType in get_output_types(nodeType):
         #     if outputType in attributeIds:
         #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
         #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
@@ -1140,8 +1154,8 @@ def check_db():
     cursor = conn.cursor()
     return "OK",200
 
-@bp.route('/boxExecProv', methods=['POST'])
-def box_exec_prov():
+@bp.route('/nodeExecProv', methods=['POST'])
+def node_exec_prov():
     data = request.json.get('data')
 
     # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
@@ -1180,7 +1194,7 @@ def box_exec_prov():
     # creating new workflow execution
 
     if(data['interaction'] == True):
-        time.sleep(1) #Ensure that interaction is in the table before box_exec_prov executes. Consider finding a better approach for this logic.
+        time.sleep(1) #Ensure that interaction is in the table before node_exec_prov executes. Consider finding a better approach for this logic.
 
         cursor.execute("SELECT int_id FROM interaction ORDER BY int_id DESC LIMIT 1")
         _int_row = cursor.fetchone()
@@ -1271,14 +1285,14 @@ def box_exec_prov():
 
 
     for input_attribute in input_attributes:
-        # creating attributeValues (use types_input for get_box_graph value='1' filter)
+        # creating attributeValues (use types_input for get_node_graph value='1' filter)
         val = str(data.get('types_input', {}).get(input_attribute[1], 0))
         cursor.execute('''INSERT INTO attributeValue (attribute_id, ri_id, value)
                 VALUES (?, ?, ?)''', (input_attribute[0], input_ri_id, val))
         conn.commit()
 
     for output_attribute in output_attributes:
-        # creating attributeValues (use types_output for get_box_graph value='1' filter)
+        # creating attributeValues (use types_output for get_node_graph value='1' filter)
         val = str(data.get('types_output', {}).get(output_attribute[1], 0))
         cursor.execute('''INSERT INTO attributeValue (attribute_id, ri_id, value)
                 VALUES (?, ?, ?)''', (output_attribute[0], output_ri_id, val))
@@ -1300,8 +1314,8 @@ def box_exec_prov():
 
     return "",200
 
-@bp.route('/getBoxGraph', methods=['POST'])
-def get_box_graph():
+@bp.route('/getNodeGraph', methods=['POST'])
+def get_node_graph():
 
     # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
     db_path = get_db_path()
@@ -1537,7 +1551,7 @@ def insert_visualization():
             return jsonify({'error': f'No execution found for activity "{activity_name}"'}), 400
         activityExecution_id = activityExecution[0]
 
-        # 3. Getting the name of the visualization box
+        # 3. Getting the name of the visualization node
 
         match = re.match(r"([A-Z]+_[A-Z]+)-", activity_name)
         vis_name = match.group(1)

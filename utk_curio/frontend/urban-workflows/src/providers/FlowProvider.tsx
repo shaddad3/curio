@@ -4,6 +4,7 @@ import React, {
     useContext,
     ReactNode,
     useCallback,
+    useMemo,
     useRef,
     useEffect,
 } from "react";
@@ -22,12 +23,13 @@ import {
     NodeRemoveChange,
 } from "reactflow";
 import { ConnectionValidator } from "../ConnectionValidator";
-import { BoxType, EdgeType } from "../constants";
+import { NodeType, EdgeType } from "../constants";
 import { useProvenanceContext } from "./ProvenanceProvider";
 import { TrillGenerator } from "../TrillGenerator";
 import { applyDashboardLayout } from "../utils/dashboardLayout";
 import { ensureMergeArrays, parseHandleIndex, setMergeSlot, clearMergeSlot } from "../utils/mergeFlowUtils";
 import { useWorkflowOperations } from "../hook/useWorkflowOperations";
+import { useToastContext } from "./ToastProvider";
 
 
 export interface IOutput {
@@ -82,7 +84,11 @@ interface FlowContextProps {
     loading: boolean;
 
     applyRemoveChanges: (changes: NodeRemoveChange[]) => void;
-    loadParsedTrill: (workflowName: string, task: string, node: any, edges: any, provenance?: boolean, merge?: boolean) => void;
+    loadParsedTrill: (workflowName: string, task: string, node: any, edges: any, provenance?: boolean, merge?: boolean, packages?: string[]) => void;
+    packages: string[];
+    setPackages: (pkgs: string[]) => void;
+    addPackage: (pkg: string) => void;
+    removePackage: (pkg: string) => void;
     updateDataNode: (nodeId: string, newData: any) => void;
     updateWarnings: (trill_spec: any) => void;
     updateDefaultCode: (nodeId: string, content: string) => void;
@@ -93,6 +99,41 @@ interface FlowContextProps {
     acceptSuggestion: (nodeId: string) => void;
     updateKeywords: (trill: any) => void;
 }
+
+// Stable context for NodeContainer — only updates when goal/minimized change, NOT on node drag
+export interface NodeActionsContextProps {
+    workflowNameRef: React.MutableRefObject<string>;
+    workflowName: string;
+    applyRemoveChanges: (changes: any[]) => void;
+    setPinForDashboard: (nodeId: string, value: boolean) => void;
+    allMinimized: number;
+    setAllMinimized: (value: number) => void;
+    expandStatus: 'expanded' | 'minimized';
+    setExpandStatus: (value: 'expanded' | 'minimized') => void;
+    updateDataNode: (nodeId: string, newData: any) => void;
+    updateDefaultCode: (nodeId: string, content: string) => void;
+    workflowGoal: string;
+    acceptSuggestion: (nodeId: string) => void;
+    setWorkflowName: (name: string) => void;
+}
+
+export const NodeActionsContext = createContext<NodeActionsContextProps>({
+    workflowNameRef: { current: "" },
+    workflowName: "DefaultWorkflow",
+    applyRemoveChanges: () => {},
+    setPinForDashboard: () => {},
+    allMinimized: 0,
+    setAllMinimized: () => {},
+    expandStatus: 'expanded',
+    setExpandStatus: () => {},
+    updateDataNode: () => {},
+    updateDefaultCode: () => {},
+    workflowGoal: "",
+    acceptSuggestion: () => {},
+    setWorkflowName: () => {},
+});
+
+export const useNodeActionsContext = () => useContext(NodeActionsContext);
 
 export const FlowContext = createContext<FlowContextProps>({
     nodes: [],
@@ -136,10 +177,15 @@ export const FlowContext = createContext<FlowContextProps>({
     updateWarnings: () => {},
     cleanCanvas: () => {},
     acceptSuggestion: () => {},
-    loadParsedTrill: async () => { }
+    loadParsedTrill: async () => { },
+    packages: [],
+    setPackages: () => {},
+    addPackage: () => {},
+    removePackage: () => {},
 });
 
 const FlowProvider = ({ children }: { children: ReactNode }) => {
+    const { showToast } = useToastContext();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [outputs, setOutputs] = useState<IOutput[]>([]);
@@ -147,32 +193,28 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
 
     const [dashboardPins, setDashboardPins] = useState<any>({}); // {[nodeId] -> boolean}
 
-    const [positionsInDashboard, _setPositionsInDashboard] = useState<any>({}); // [nodeId] -> change
-    const positionsInDashboardRef = useRef(positionsInDashboard);
+    const positionsInDashboardRef = useRef<any>({});
     const setPositionsInDashboard = (data: any) => {
-        positionsInDashboardRef.current = data;
-        _setPositionsInDashboard(data);
+        positionsInDashboardRef.current = typeof data === 'function' ? data(positionsInDashboardRef.current) : data;
     };
 
-    const [positionsInWorkflow, _setPositionsInWorkflow] = useState<any>({}); // [nodeId] -> change
-    const positionsInWorkflowRef = useRef(positionsInWorkflow);
+    const positionsInWorkflowRef = useRef<any>({});
     const setPositionsInWorkflow = (data: any) => {
-        positionsInWorkflowRef.current = data;
-        _setPositionsInWorkflow(data);
+        positionsInWorkflowRef.current = typeof data === 'function' ? data(positionsInWorkflowRef.current) : data;
     };
 
     const reactFlow = useReactFlow();
-    const { newBox, addWorkflow, deleteBox, newConnection, deleteConnection } =
+    const { newNode, addWorkflow, deleteNode, newConnection, deleteConnection } =
         useProvenanceContext();
 
     const [loading, setLoading] = useState<boolean>(false);
 
     const [workflowName, _setWorkflowName] = useState<string>("DefaultWorkflow");
     const workflowNameRef = React.useRef(workflowName);
-    const setWorkflowName = (data: any) => {
+    const setWorkflowName = useCallback((data: any) => {
         workflowNameRef.current = data;
         _setWorkflowName(data);
-    };
+    }, []);
 
     const initializeProvenance = async () => {
         setLoading(true);
@@ -250,23 +292,17 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         }
     };
 
-    const updatePositionWorkflow = (nodeId: string, change: any) => {
-        setPositionsInWorkflow((prev: any) => ({
-            ...prev,
-            [nodeId]: change
-        }));
-    };
+    const updatePositionWorkflow = useCallback((nodeId: string, change: any) => {
+        positionsInWorkflowRef.current = { ...positionsInWorkflowRef.current, [nodeId]: change };
+    }, []);
 
-    const updatePositionDashboard = (nodeId: string, position: { x: number; y: number }) => {
-        setPositionsInDashboard((prev: any) => ({
-            ...prev,
-            [nodeId]: position
-        }));
-    };
+    const updatePositionDashboard = useCallback((nodeId: string, position: { x: number; y: number }) => {
+        positionsInDashboardRef.current = { ...positionsInDashboardRef.current, [nodeId]: position };
+    }, []);
 
-    const setPinForDashboard = (nodeId: string, value: boolean) => {
+    const setPinForDashboard = useCallback((nodeId: string, value: boolean) => {
         setDashboardPins((prev: any) => ({ ...prev, [nodeId]: value }));
-    };
+    }, [setDashboardPins]);
 
     const addNode = useCallback(
         (node: Node, customWorkflowName?: string, provenance?: boolean) => {
@@ -283,14 +319,14 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             });
 
             if (provenance) // If there should be provenance tracking
-                newBox((customWorkflowName ? customWorkflowName : workflowNameRef.current), (node.type as string) + "-" + node.id);
+                newNode((customWorkflowName ? customWorkflowName : workflowNameRef.current), (node.type as string) + "-" + node.id);
         },
         [setNodes]
     );
 
     // updates a single box with the new input (new connections)
     const applyOutput = (
-        inBox: BoxType,
+        inNodeType: NodeType,
         inId: string,
         outId: string,
         sourceHandle: string,
@@ -317,7 +353,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             nds.map((node: any) => {
                 if (node.id !== inId) return node;
 
-                if (inBox == BoxType.MERGE_FLOW) {
+                if (inNodeType == NodeType.MERGE_FLOW) {
                     const { inputList, sourceList } = ensureMergeArrays(node.data.input, node.data.source);
                     const handleIndex = parseHandleIndex(targetHandle);
                     if (handleIndex >= 0) {
@@ -345,7 +381,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                     deleteConnection(
                         workflowNameRef.current,
                         targetNode.id,
-                        targetNode.type as BoxType
+                        targetNode.type as NodeType
                     );
                 }
 
@@ -358,7 +394,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                         nds.map((node: any) => {
                             if (node.id !== resetInput) return node;
 
-                            if (targetNode.type === BoxType.MERGE_FLOW) {
+                            if (targetNode.type === NodeType.MERGE_FLOW) {
                                 const { inputList, sourceList } = ensureMergeArrays(node.data.input, node.data.source);
                                 const handleIndex = parseHandleIndex(connection.targetHandle);
                                 if (handleIndex >= 0) {
@@ -396,12 +432,12 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 if (change.type === "remove" && 'id' in change) {
                     const node = reactFlow.getNode(change.id) as Node;
                     if (node) {
-                        deleteBox(workflowNameRef.current, node.type + "_" + node.id);
+                        deleteNode(workflowNameRef.current, node.type + "_" + node.id);
                     }
                 }
             }
         },
-        [setOutputs, reactFlow, deleteBox]
+        [setOutputs, reactFlow, deleteNode]
     );
 
     const onConnect = useCallback(
@@ -446,49 +482,49 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 (isInOutHandle(connection.targetHandle) && !isInOutHandle(connection.sourceHandle))
             ) {
                 validHandleCombination = false;
-                alert("An in/out connection can only be connected to another in/out connection");
+                showToast("An in/out connection can only be connected to another in/out connection", "warning");
             }
             else if (
                 (isInHandle(connection.sourceHandle) && connection.targetHandle !== "out") ||
                 (isInHandle(connection.targetHandle) && connection.sourceHandle !== "out")
             ) {
                 validHandleCombination = false;
-                alert("An in connection can only be connected to an out connection");
+                showToast("An in connection can only be connected to an out connection", "warning");
             }
             else if (
                 (connection.sourceHandle === "out" && !isInHandle(connection.targetHandle)) ||
                 (connection.targetHandle === "out" && !isInHandle(connection.sourceHandle))
             ) {
                 validHandleCombination = false;
-                alert("An out connection can only be connected to an in connection");
+                showToast("An out connection can only be connected to an in connection", "warning");
             }
 
 
             if (validHandleCombination) {
                 // Check compatibility between inputs and outputs
-                let inBox: BoxType | undefined = undefined;
-                let outBox: BoxType | undefined = undefined;
+                let inNodeType: NodeType | undefined = undefined;
+                let outNodeType: NodeType | undefined = undefined;
 
                 for (const elem of nodes) {
                     if (elem.id == connection.source) {
-                        outBox = elem.type as BoxType;
+                        outNodeType = elem.type as NodeType;
                     }
 
                     if (elem.id == connection.target) {
-                        inBox = elem.type as BoxType;
+                        inNodeType = elem.type as NodeType;
                     }
                 }
 
                 let allowConnection = ConnectionValidator.checkBoxCompatibility(
-                    outBox,
-                    inBox
+                    outNodeType,
+                    inNodeType
                 );
 
                 if (!allowConnection) {
-                    alert("Input and output types of these boxes are not compatible");
+                    showToast("Input and output types of these boxes are not compatible", "warning");
                 }
 
-                if (inBox === BoxType.MERGE_FLOW && allowConnection) {
+                if (inNodeType === NodeType.MERGE_FLOW && allowConnection) {
                     const availableHandles = Array(5).fill(1).map((_, i) => `in_${i}`);
                     const usedHandles = new Set(
                         edges
@@ -501,10 +537,10 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
 
 
                     if (usedHandles.size > 7) {
-                        alert("Connection Limit Reached!\n\nMerge nodes can only accept up to 7 input connections.");
+                        showToast("Connection limit reached. Merge nodes can only accept up to 7 input connections.", "warning");
                         allowConnection = false;
                     } else if (usedHandles.has(connection.targetHandle)) {
-                        alert("This input already has a connection.\n\nEach input handle can only accept one connection.");
+                        showToast("This input already has a connection. Each input handle can only accept one connection.", "warning");
                         allowConnection = false;
                     }
                 }
@@ -512,18 +548,18 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
 
                 // Checking cycles
                 if (target.id === connection.source) {
-                    alert("Cycles are not allowed");
+                    showToast("Cycles are not allowed in the dataflow", "warning");
                     allowConnection = false;
                 }
 
                 if (connection.sourceHandle != "in/out" && hasCycle(target)) {
-                    alert("Cycles are not allowed");
+                    showToast("Cycles are not allowed in the dataflow", "warning");
                     allowConnection = false;
                 }
 
                 if (allowConnection) {
                     applyOutput(
-                        inBox as BoxType,
+                        inNodeType as NodeType,
                         connection.target as string,
                         connection.source as string,
                         connection.sourceHandle as string,
@@ -554,9 +590,9 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                                 newConnection(
                                     (custom_workflow ? custom_workflow : workflowNameRef.current),
                                     customConnection.source,
-                                    outBox as BoxType,
+                                    outNodeType as NodeType,
                                     customConnection.target,
-                                    inBox as BoxType
+                                    inNodeType as NodeType
                                 );
                         }
 
@@ -593,7 +629,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             nds.map((node: any) => {
                 if (!nodesAffected.includes(node.id)) return node;
 
-                if (node.type == BoxType.MERGE_FLOW) {
+                if (node.type == NodeType.MERGE_FLOW) {
                     const { inputList, sourceList } = ensureMergeArrays(node.data.input, node.data.source);
                     const sourceIndex = sourceList.findIndex((s: any) => s === newOutput.nodeId);
                     if (sourceIndex >= 0) {
@@ -647,7 +683,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         }
 
         for (let i = 0; i < nodes.length; i++) {
-            if (nodes[i].type == BoxType.DATA_POOL) {
+            if (nodes[i].type == NodeType.DATA_POOL) {
                 poolsIds.push(nodes[i].id);
             }
         }
@@ -660,8 +696,8 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 edges[i].sourceHandle == "in/out" &&
                 edges[i].targetHandle == "in/out" &&
                 !(
-                    targetNode.type == BoxType.DATA_POOL &&
-                    sourceNode.type == BoxType.DATA_POOL
+                    targetNode.type == NodeType.DATA_POOL &&
+                    sourceNode.type == NodeType.DATA_POOL
                 )
             ) {
                 if (
@@ -725,8 +761,8 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 if (
                     edge.sourceHandle == "in/out" &&
                     edge.targetHandle == "in/out" &&
-                    targetNode.type == BoxType.DATA_POOL &&
-                    sourceNode.type == BoxType.DATA_POOL
+                    targetNode.type == NodeType.DATA_POOL &&
+                    sourceNode.type == NodeType.DATA_POOL
                 ) {
                     if (edge.target != propagationObj.nodeId) {
                         sendTo.push(edge.target);
@@ -776,7 +812,38 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         onConnect, addNode,
     });
 
+    const nodeActionsValue = useMemo<NodeActionsContextProps>(() => ({
+        workflowNameRef,
+        workflowName,
+        applyRemoveChanges: workflowOps.applyRemoveChanges,
+        setPinForDashboard,
+        allMinimized: workflowOps.allMinimized,
+        setAllMinimized: workflowOps.setAllMinimized,
+        expandStatus: workflowOps.expandStatus,
+        setExpandStatus: workflowOps.setExpandStatus,
+        updateDataNode: workflowOps.updateDataNode,
+        updateDefaultCode: workflowOps.updateDefaultCode,
+        workflowGoal: workflowOps.workflowGoal,
+        acceptSuggestion: workflowOps.acceptSuggestion,
+        setWorkflowName,
+    }), [
+        workflowNameRef,
+        workflowName,
+        workflowOps.applyRemoveChanges,
+        setPinForDashboard,
+        workflowOps.allMinimized,
+        workflowOps.setAllMinimized,
+        workflowOps.expandStatus,
+        workflowOps.setExpandStatus,
+        workflowOps.updateDataNode,
+        workflowOps.updateDefaultCode,
+        workflowOps.workflowGoal,
+        workflowOps.acceptSuggestion,
+        setWorkflowName,
+    ]);
+
     return (
+        <NodeActionsContext.Provider value={nodeActionsValue}>
         <FlowContext.Provider
             value={{
                 nodes,
@@ -809,6 +876,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         >
             {children}
         </FlowContext.Provider>
+        </NodeActionsContext.Provider>
     );
 };
 

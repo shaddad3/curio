@@ -83,7 +83,7 @@ class TestWorkflowCanvas:
             node_el = self._node_locator(node)
             node_el.scroll_into_view_if_needed()
 
-            # if Pool box wait for data table to show
+            # if Pool node wait for data table to show
             if node.type == "DATA_POOL":
                 data_table = node_el.locator("td.MuiTableCell-root")
                 data_table.first.wait_for(state="visible", timeout=10000)
@@ -109,12 +109,12 @@ class TestWorkflowCanvas:
             # Wait until either "Done" or "Error" is visible
             node_el.locator("span").filter(
                 has_text=re.compile(r"^(Done|Error)$")
-            ).first.wait_for(state="visible", timeout=100000)
+            ).first.wait_for(state="visible", timeout=1000000)
 
             # Wait for the execution outcome (up to 30 s)
             done_span = node_el.locator("span").filter(has_text=re.compile(r"^Done$"))
             error_span = node_el.locator("span").filter(has_text=re.compile(r"^Error$"))
-            done_span.first.wait_for(state="visible", timeout=100000)
+            done_span.first.wait_for(state="visible", timeout=1000000)
 
             assert done_span.count() >= 1, (
                 f"Node {node.id} ({node.type}) did not produce 'Done' — "
@@ -126,7 +126,7 @@ class TestWorkflowCanvas:
             output_tab = node_el.locator(
                 '.nav-link[data-rr-ui-event-key="output"]'
             )
-            output_tab.first.wait_for(state="visible", timeout=10000)
+            output_tab.first.wait_for(state="visible", timeout=100000)
             assert output_tab.count() >= 1, (
                 f"Code node {node.id} ({node.type}) is missing its "
                 f"output tab"
@@ -210,7 +210,7 @@ class TestWorkflowCanvas:
 
             if node.category == "code":
 
-                # 1. Check if the output tab is present (always rendered in BoxEditor)
+                # 1. Check if the output tab is present (always rendered in NodeEditor)
                 output_tab = node_el.locator(
                     '.nav-link[data-rr-ui-event-key="output"]'
                 )

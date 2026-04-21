@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 
-import { BoxType, ResolutionTypeUTK, VisInteractionType } from "../constants";
+import { NodeType, ResolutionTypeUTK, VisInteractionType } from "../constants";
 import { Environment, GrammarInterpreter } from "utk";
 
 import { get_camera } from "../utils/parsing";
@@ -10,10 +10,13 @@ import { formatDate, getType, mapTypes } from "../utils/formatters";
 import { ICodeData } from "../types";
 import { useFlowContext } from "../providers/FlowProvider";
 import { useProvenanceContext } from "../providers/ProvenanceProvider";
+import { useToastContext } from "../providers/ToastProvider";
 
 export function useUTK({ data, code }: { data: any, code: string }) {
+  const { showToast } = useToastContext();
   const [output, setOutput] = useState<ICodeData>({ code: "", content: "" });
   const { workflowNameRef } = useFlowContext();
+  const { nodeExecProv } = useProvenanceContext();
 
   const [inputData, setInputData] = useState();
   const [defaultGrammar, setDefaultGrammar] = useState<string>("{}");
@@ -64,7 +67,6 @@ export function useUTK({ data, code }: { data: any, code: string }) {
     let dfIN: string[] = [];
 
     if (data.input.data) {
-      console.log(data);
       data.input.data.features.forEach(({ geometry, ...rest }: any) => {
         dfIN.push(JSON.stringify(rest));
       });
@@ -80,7 +82,7 @@ export function useUTK({ data, code }: { data: any, code: string }) {
         },
         body: JSON.stringify({
           data: {
-            activity_name: BoxType.VIS_UTK + "-" + data.nodeId,
+            activity_name: NodeType.VIS_UTK + "-" + data.nodeId,
           },
         }),
       });
@@ -97,11 +99,11 @@ export function useUTK({ data, code }: { data: any, code: string }) {
 
       const typesOutput = [...typesInput];
 
-      boxExecProv(
+      nodeExecProv(
         startTime,
         endTime,
         workflowNameRef.current,
-        BoxType.VIS_UTK + "-" + data.nodeId,
+        NodeType.VIS_UTK + "-" + data.nodeId,
         mapTypes(typesInput),
         mapTypes(typesOutput),
         code,
@@ -117,7 +119,7 @@ export function useUTK({ data, code }: { data: any, code: string }) {
         },
         body: JSON.stringify({
           data: {
-            activity_name: BoxType.VIS_UTK + "-" + data.nodeId,
+            activity_name: NodeType.VIS_UTK + "-" + data.nodeId,
           },
         }),
       });
@@ -269,11 +271,11 @@ export function useUTK({ data, code }: { data: any, code: string }) {
 
       let typesOuput: string[] = [...typesInput];
 
-      boxExecProv(
+      nodeExecProv(
         startTime,
         endTime,
         workflowNameRef.current,
-        BoxType.VIS_UTK + "-" + data.nodeId,
+        NodeType.VIS_UTK + "-" + data.nodeId,
         mapTypes(typesInput),
         mapTypes(typesOuput),
         code
@@ -341,12 +343,12 @@ export function useUTK({ data, code }: { data: any, code: string }) {
         if (parsedInput.dataType == "outputs") {
           for (const elem of parsedInput.data) {
             if (elem.dataType != "geodataframe") {
-              alert("UTK box can only receive geodataframes");
+              showToast("UTK node can only receive geodataframes", "error");
               validInput = false;
             }
           }
         } else if (parsedInput.dataType != "geodataframe") {
-          alert("UTK box can only receive geodataframes");
+          showToast("UTK node can only receive geodataframes", "error");
           validInput = false;
         }
 
@@ -385,12 +387,12 @@ export function useUTK({ data, code }: { data: any, code: string }) {
               parsedGeojson.metadata != undefined &&
               parsedGeojson.metadata.name == undefined
             ) {
-              alert("All geojson layers for UTK must be named");
+              showToast("All GeoJSON layers for UTK must be named", "error");
               return;
             }
 
             if (parsedGeojson.metadata == undefined) {
-              alert("All geojson layers for UTK must be named");
+              showToast("All GeoJSON layers for UTK must be named", "error");
               return;
             }
           }
@@ -558,7 +560,7 @@ export function useUTK({ data, code }: { data: any, code: string }) {
                           type: interactionsRef.current[interactionKey].type,
                           data: interactionsRef.current[interactionKey].data,
                           priority: 0,
-                          source: BoxType.VIS_UTK,
+                          source: NodeType.VIS_UTK,
                         };
                       }
 
@@ -566,7 +568,7 @@ export function useUTK({ data, code }: { data: any, code: string }) {
                         type: VisInteractionType.POINT,
                         data: interactionPerGeom,
                         priority: 1,
-                        source: BoxType.VIS_UTK,
+                        source: NodeType.VIS_UTK,
                       };
 
                       setInteractions(newObj);
@@ -630,10 +632,10 @@ export function useUTK({ data, code }: { data: any, code: string }) {
 
                 //         let newObj: any = {};
                 //         for(const interactionKey of interactionsKeys){
-                //             newObj[interactionKey] = {type: interactionsRef.current[interactionKey].type, data: interactionsRef.current[interactionKey].data, priority: 0, source: BoxType.VIS_UTK};
+                //             newObj[interactionKey] = {type: interactionsRef.current[interactionKey].type, data: interactionsRef.current[interactionKey].data, priority: 0, source: NodeType.VIS_UTK};
                 //         }
 
-                //         newObj[knotToLayerDict[knotId]] = {type: VisInteractionType.POINT, data: interactionPerGeom, priority: 1, source: BoxType.VIS_UTK}
+                //         newObj[knotToLayerDict[knotId]] = {type: VisInteractionType.POINT, data: interactionPerGeom, priority: 1, source: NodeType.VIS_UTK}
 
                 //         setInteractions(newObj);
                 //     }
