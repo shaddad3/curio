@@ -20,7 +20,7 @@ export default function NodeExplanation({
 ) {
 
     const [explanationText, setExplanationText] = useState('');
-    const { openAIRequest } = useLLMContext();
+    const { llmRequest } = useLLMContext();
 
     const generateExplanation = (node_type: NodeType, code: string | undefined, current_input: string, current_output: string) => {
         
@@ -34,7 +34,7 @@ export default function NodeExplanation({
 
         let text = JSON.stringify(node) + "\n\n" + "Your task as an assistant is to textually explain, in an high school level, what this box is doing. Include a lot of details and focus on explaning the content of the box and its possible role in the dataflow and opportunities to improve it. But do not include specific information about the trill structure like numeric ids. If errors are present help the users explain how they can be fixed (**DO NOT MENTION ANY PATH OR FILE NAME IN YOUR EXPLANATION**) **DO NOT PROVIDE EXPLANATIONS FOR THE EXAMPLE DATAFLOW. ALWAYS PRODUCE EXPLANATIONS FOR THE LAST NODE PROVIDED EVEN IF IT IS EMPTY**"
 
-        openAIRequest("default_preamble", "single_box_explanation_prompt", text).then((response: any) => {
+        llmRequest("default_preamble", "single_box_explanation_prompt", text).then((response: any) => {
             console.log("Response:", response);
 
             setExplanationText(response.result);

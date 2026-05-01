@@ -1,32 +1,88 @@
 from flask import request, abort, jsonify, g
 import requests
 import json
-import sqlite3
+
+_sandbox_session = requests.Session()
 from utk_curio.backend.extensions import db
-from utk_curio.backend.app.users.models import User, UserSession
-from utk_curio.backend.app.services.google_oauth import GoogleOAuth
-from utk_curio.backend.app.middlewares import require_auth
+from utk_curio.backend.app.users.dependencies import require_auth, get_current_token
 import uuid
 import os
-import zlib
 import time
-import mmap
-from pathlib import Path
-import re
 import pandas as pd
 import geopandas as gpd
-from openai import OpenAI
+from utk_curio.backend.config import (
+    GUEST_LLM_API_TYPE,
+    GUEST_LLM_BASE_URL,
+    GUEST_LLM_API_KEY,
+    GUEST_LLM_MODEL,
+)
+
+
+def _resolve_llm_config():
+    """Return (api_key, api_type, base_url, model) for the current authenticated user."""
+    user = g.user
+    if user.is_guest:
+        if not GUEST_LLM_API_KEY:
+            abort(400, description="LLM is not available for guest users at this time.")
+        return GUEST_LLM_API_KEY, GUEST_LLM_API_TYPE, GUEST_LLM_BASE_URL, GUEST_LLM_MODEL
+    if not user.llm_model:
+        abort(400, description="No LLM configured. Set your provider and model in the Projects page.")
+    return (
+        user.llm_api_key or "",
+        user.llm_api_type or "openai_compatible",
+        user.llm_base_url or "",
+        user.llm_model,
+    )
+
+
+def _call_llm(api_key: str, api_type: str, base_url: str, model: str, messages: list) -> str:
+    """Dispatch an LLM chat completion to the configured provider."""
+    if api_type == "anthropic":
+        import anthropic
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        chat_messages = [m for m in messages if m["role"] != "system"]
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model,
+            system="\n".join(system_parts) if system_parts else anthropic.NOT_GIVEN,
+            messages=chat_messages,
+            max_tokens=4096,
+        )
+        return resp.content[0].text
+    elif api_type == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        chat_messages = [m for m in messages if m["role"] != "system"]
+        history = []
+        for m in chat_messages[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            history.append({"role": role, "parts": [m["content"]]})
+        last_user_msg = chat_messages[-1]["content"] if chat_messages else ""
+        system_instruction = "\n".join(system_parts) if system_parts else None
+        gen_model = genai.GenerativeModel(model, system_instruction=system_instruction)
+        chat = gen_model.start_chat(history=history)
+        response = chat.send_message(last_user_msg)
+        return response.text
+    else:  # openai_compatible (default)
+        from openai import OpenAI
+        kwargs = {"api_key": api_key or "no-key"}
+        if base_url:
+            kwargs["base_url"] = base_url
+        client = OpenAI(**kwargs)
+        completion = client.chat.completions.create(model=model, messages=messages)
+        return completion.choices[0].message.content
 
 # The Flask app
 from utk_curio.backend.app.api import bp
 
-# for duckDB + Arrow integration
-import duckdb
+# for Arrow integration
+import io
 import pyarrow as pa
 from flask import Response
 
 # Sandbox address
-api_address='http://'+os.getenv('FLASK_SANDBOX_HOST', 'localhost')
+api_address='http://'+os.getenv('FLASK_SANDBOX_HOST', '127.0.0.1')
 api_port=int(os.getenv('FLASK_SANDBOX_PORT', 2000))
 
 conversation = {}
@@ -34,40 +90,22 @@ conversation = {}
 tokens_left = 200000 # Tokens allowed per minute
 last_refresh = time.time() # Last time that 60 minutes elapsed
 
-attributeIds = {
-    "DATAFRAME": "1",
-    "GEODATAFRAME": "2",
-    "VALUE": "3",
-    "LIST": "4",
-    "JSON": "5",
-    "RASTER": "6"
-}
-
-# Fallback folder names for template types whose folder doesn't match node_type.lower()
-# _FOLDER_OVERRIDES = {
-#     # "VIS_UTK": "utk",
-#     # "VIS_VEGA": "vega_lite",
-# }
-
 # In-memory node-type registry populated by the frontend via POST /node-types.
-# Initialised with hardcoded defaults so provenance and templates work even if
-# the frontend hasn't registered yet (e.g. backend starts before frontend).
+# Initialised with hardcoded defaults so templates work even if the frontend
+# hasn't registered yet (e.g. backend starts before frontend).
 _node_type_registry: dict = {
-    "DATA_LOADING":          {"inputTypes": [],                                                   "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
-    "DATA_EXPORT":           {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": []},
-    "DATA_CLEANING":         {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
-    "DATA_TRANSFORMATION":   {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
-    "COMPUTATION_ANALYSIS":  {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"], "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
-    "FLOW_SWITCH":           {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"], "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
-    "VIS_UTK":               {"inputTypes": ["GEODATAFRAME"],                                     "outputTypes": ["GEODATAFRAME"]},
-    "VIS_VEGA":              {"inputTypes": ["DATAFRAME"],                                        "outputTypes": ["DATAFRAME"]},
-    "VIS_TABLE":             {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
-    "VIS_TEXT":              {"inputTypes": ["VALUE"],                                             "outputTypes": ["VALUE"]},
-    "VIS_IMAGE":             {"inputTypes": ["LIST"],                                             "outputTypes": ["LIST"]},
-    "CONSTANTS":             {"inputTypes": [],                                                   "outputTypes": ["VALUE"]},
-    "DATA_POOL":             {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
-    "MERGE_FLOW":            {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"], "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
-    "DATA_SUMMARY":          {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                        "outputTypes": ["JSON"]},
+    "DATA_LOADING":          {"inputTypes": [],                                                             "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
+    "DATA_EXPORT":           {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                                 "outputTypes": []},
+    "DATA_TRANSFORMATION":   {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                                 "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
+    "COMPUTATION_ANALYSIS":  {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"],        "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
+    "FLOW_SWITCH":           {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"],        "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
+    "VIS_UTK":               {"inputTypes": ["GEODATAFRAME"],                                              "outputTypes": ["GEODATAFRAME"]},
+    "VIS_VEGA":              {"inputTypes": ["DATAFRAME"],                                                 "outputTypes": ["DATAFRAME"]},
+    "VIS_SIMPLE":            {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE"],                        "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE"]},
+    "CONSTANTS":             {"inputTypes": [],                                                             "outputTypes": ["VALUE"]},
+    "DATA_POOL":             {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                                 "outputTypes": ["DATAFRAME", "GEODATAFRAME"]},
+    "MERGE_FLOW":            {"inputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"],        "outputTypes": ["DATAFRAME", "GEODATAFRAME", "VALUE", "LIST", "JSON"]},
+    "DATA_SUMMARY":          {"inputTypes": ["DATAFRAME", "GEODATAFRAME"],                                 "outputTypes": ["JSON"]},
 }
 
 def get_output_types(node_type: str) -> list:
@@ -79,14 +117,9 @@ def get_input_types(node_type: str) -> list:
     return entry["inputTypes"] if entry else []
 
 def get_folder_for_type(node_type: str) -> str:
-    # if node_type in _FOLDER_OVERRIDES:
-    #     return _FOLDER_OVERRIDES[node_type]
     return node_type.lower()
 
 def get_type_for_folder(folder: str) -> str:
-    # for bt, f in _FOLDER_OVERRIDES.items():
-    #     if f == folder:
-    #         return bt
     return folder.upper()
 
 def get_template_folders() -> list:
@@ -96,96 +129,34 @@ def get_template_folders() -> list:
         folders.add(get_folder_for_type(node_type))
     return sorted(folders)
 
-def get_db_path():
-    launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
-    db_path = os.path.join(launch_dir, ".curio", "provenance.db")
-    return db_path
-
 def get_templates_path():
     launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
-    db_path = os.path.join(launch_dir, "templates")
-    return db_path
+    return os.path.join(launch_dir, "templates")
 
-def create_new_workflow_version(conn, workflow_name):
-    """Create a new versioned workflow from the latest one with the given name.
+def _parse_input_ref(req_input: dict | None) -> dict:
+    """Normalize the input reference field from execution requests."""
+    result = {'path': '', 'dataType': ''}
+    if not req_input:
+        return result
+    if req_input.get('dataType') == 'outputs' and 'data' in req_input:
+        result['path'] = req_input['data']
+        result['dataType'] = 'outputs'
+    elif 'filename' in req_input:
+        result['path'] = req_input['filename']
+        result['dataType'] = req_input['dataType'] if req_input['dataType'] != 'outputs' else 'file'
+    elif 'path' in req_input:
+        result['path'] = req_input['path']
+        result['dataType'] = req_input['dataType'] if req_input['dataType'] != 'outputs' else 'file'
+    return result
 
-    Works regardless of the connection's row_factory setting by using a
-    dedicated cursor with tuple rows for the internal queries.
+def transform_to_vega(data):
+    """Transform a pandas-style column-based JSON to Vega-Lite row-based JSON."""
+    if "data" in data and isinstance(data["data"], dict):
+        columns = list(data["data"].keys())
+        num_rows = len(data["data"][columns[0]])
+        return [{col: data["data"][col][i] for col in columns} for i in range(num_rows)]
+    return data
 
-    Returns (old_workflow_id, new_workflow_id).
-    """
-    prev_factory = conn.row_factory
-    conn.row_factory = None
-    cursor = conn.cursor()
-
-    # // new version (increment version number based on previous old workflow that points to a ve that points to the version)
-    # // new versioned element (pointing to the versioned element of the old workflow and pointing to the new version)
-    # // new workflow
-    # // point new workflow to the new versioned element
-
-    # last workflow created with this name
-    cursor.execute(
-        "SELECT * FROM workflow WHERE workflow_id = "
-        "(SELECT MAX(workflow_id) FROM workflow WHERE workflow_name = ?)",
-        (workflow_name,),
-    )
-    old_workflow = cursor.fetchone()
-
-    # getting versionedElement attached to the old workflow
-    cursor.execute(
-        "SELECT * FROM versionedElement WHERE ve_id = ?",
-        (old_workflow[2],),
-    )
-    old_workflow_ve = cursor.fetchone()
-
-    # getting the version attached to the old workflow
-    cursor.execute(
-        "SELECT * FROM version WHERE version_id = ?",
-        (old_workflow_ve[1],),
-    )
-    version = cursor.fetchone()
-
-    new_version_number = str(float(version[1]) + 1.0)
-
-    # creating new version
-    cursor.execute(
-        "INSERT INTO version (version_number) VALUES (?)",
-        (new_version_number,),
-    )
-    conn.commit()
-
-    # id of the new just added workflow
-    version_id = cursor.lastrowid
-
-    # creating new versioned element for the new workflow
-    cursor.execute(
-        "INSERT INTO versionedElement (previous_ve_id, version_id) VALUES (?, ?)",
-        (old_workflow_ve[0], version_id),
-    )
-    conn.commit()
-
-    # id of the new just added versioned element
-    ve_id = cursor.lastrowid
-
-    # creating new workflow
-    cursor.execute(
-        "INSERT INTO workflow (workflow_name, ve_id) VALUES (?, ?)",
-        (workflow_name, ve_id),
-    )
-    conn.commit()
-
-    # id of the new just added workflow
-    new_workflow_id = cursor.lastrowid
-
-    conn.row_factory = prev_factory
-    return old_workflow[0], new_workflow_id
-
-@bp.after_request
-def add_cors_headers(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE')
-    return response
 
 @bp.route('/')
 def root():
@@ -223,6 +194,7 @@ def sharedDataPath():
     return os.environ["CURIO_SHARED_DATA"]
 
 @bp.route('/upload', methods=['POST'])
+@require_auth
 def upload_file():
 
     if 'file' not in request.files:
@@ -232,8 +204,8 @@ def upload_file():
 
     if file.filename == '':
         return 'No selected file'
-    
-    response = requests.post(api_address+":"+str(api_port)+"/upload", files={'file': file}, data={'fileName': file.filename})
+
+    response = _sandbox_session.post(api_address+":"+str(api_port)+"/upload", files={'file': file}, data={'fileName': file.filename}, timeout=60)
 
     if response.status_code == 200:
         return 'File uploaded successfully'
@@ -241,327 +213,212 @@ def upload_file():
         return 'Error uploading file'
 
 
-def transform_to_vega(data):
-    """
-    Transforms a pandas-style JSON (column-based) to Vega-Lite-ready JSON (row-based).
-    
-    Args:
-        data (dict): The original pandas-style JSON data.
-
-    Returns:
-        dict: The transformed Vega-Lite-ready JSON data.
-    """
-    if "data" in data and isinstance(data["data"], dict):
-        columns = list(data["data"].keys())
-        values = []
-
-        # Assuming all columns have the same number of rows
-        num_rows = len(data["data"][columns[0]])
-
-        for i in range(num_rows):
-            row = {col: data["data"][col][i] for col in columns}
-            values.append(row)
-
-        return values
-
-    return data
-
-# @bp.route('/get', methods=['GET'])
-# def get_file():
-#     file_name = request.args.get('fileName')
-#     vega = request.args.get('vega', 'false').lower() == 'true'
-
-#     if not file_name:
-#         return 'No file name specified', 400
-    
-#     launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
-#     shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
-#     base_path = Path(launch_dir) / shared_disk_path
-#     base_path = base_path.resolve()
-
-#     requested_path = Path(file_name)
-#     full_path = (base_path / requested_path).resolve()
-
-#     if not str(full_path).startswith(str(base_path)):
-#         return 'Invalid file path: %s'%full_path, 403
-
-#     if not full_path.exists():
-#         return 'File does not exist: %s'%full_path, 404
-
-#     try:
-#         # Using mmap for efficient memory-mapped loading
-#         with open(full_path, "rb") as file:
-#             with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
-#                 # Decompress and decode directly from the memory-mapped file
-#                 decompressed_data = zlib.decompress(mmapped_file[:])
-#                 data = json.loads(decompressed_data.decode('utf-8'))
-
-#                 if isinstance(data, str):
-#                     data = json.loads(data)
-                
-#                 if vega:
-#                     data = transform_to_vega(data)
-
-#         return jsonify(data), 200
-
-#     except Exception as e:
-#         return f'Error loading file: {str(e)}', 500
-
 @bp.route('/get', methods=['GET'])
+@require_auth
 def get_file():
     file_name = request.args.get('fileName')
     vega = request.args.get('vega', 'false').lower() == 'true'
 
     if not file_name:
-        return 'No file name specified', 400
+        return 'No artifact id specified', 400
 
-    launch_dir = Path(os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())).resolve()
-    shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
-    base_path = (launch_dir / shared_disk_path).resolve()
-    
-    requested_path = Path(file_name)
-    full_path = (base_path / requested_path).resolve()
-
-    # Security check
-    if not str(full_path).startswith(str(base_path)):
-        return 'Invalid file path: %s' % full_path, 403
-
-    if not full_path.exists():
-        return 'File does not exist: %s' % full_path, 404
-
+    session_id = get_current_token()
     try:
-        # 1. PARQUET FILES (The DuckDB Fast Path)
-        if full_path.suffix == '.parquet':
-            # Create a lightning-fast in-memory instance
-            con = duckdb.connect()
-            
-            # Query the file and convert directly to Apache Arrow
-            arrow_table = con.execute(f"SELECT * FROM '{full_path}'").fetch_arrow_table()
-            
-            if vega:
-                # Vega expects a standard JSON array of objects
-                vega_data = arrow_table.to_pylist()
-                return jsonify(vega_data), 200
-            else:
-                # Phase 4 Preview: Stream the Arrow IPC format directly!
-                sink = pa.BufferOutputStream()
-                with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
-                    writer.write_table(arrow_table)
-                
-                return Response(
-                    sink.getvalue().to_pybytes(),
-                    mimetype='application/vnd.apache.arrow.stream'
-                )
+        t0 = time.perf_counter()
+        resp = _sandbox_session.get(
+            api_address + ":" + str(api_port) + "/get",
+            params={"fileName": file_name, "sessionId": session_id},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if vega:
+            data = transform_to_vega(data)
+        print(f"[/get] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
 
-        # 2. STANDARD JSON FILES (Metadata, Vega specs, etc.)
-        elif full_path.suffix == '.json':
-            with open(full_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return jsonify(data), 200
+        # Stream the Arrow byte-stream to frontend instead of JSON!
+        arrow_table = pa.Table.from_pylist(data)
+        sink = pa.BufferOutputStream()
 
-        # 3. LEGACY FILES (Fallback to prevent breaking old nodes)
-        else:
-            with open(full_path, "rb") as file:
-                with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
-                    decompressed_data = zlib.decompress(mmapped_file[:])
-                    data = json.loads(decompressed_data.decode('utf-8'))
-                    
-            return jsonify({"data": data, "dataType": "dataframe"}), 200
-
+        with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
+            writer.write_table(arrow_table)
+        
+        return Response(
+            sink.getvalue().to_pybytes(),
+            mimetype='application/vnd.apache.arrow.stream'
+        )
     except Exception as e:
-        return f'Error loading file: {str(e)}', 500
+        return f'Error loading artifact: {str(e)}', 500
+
 
 @bp.route('/get-preview', methods=['GET'])
+@require_auth
 def get_file_preview():
     """
-    Get first 100 rows + metadata for DataPool display optimization.
-    Similar to /get but returns limited data to reduce transfer overhead.
+    Get first N rows + metadata for DataPool display optimization.
+    Similar to /get but truncates the DataFrame/GeoDataFrame before
+    converting to JSON, so large artifacts stay cheap to preview.
     """
     file_name = request.args.get('fileName')
-    
+
     if not file_name:
-        return 'No file name specified', 400
-    
-    launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
-    shared_disk_path = os.environ.get("CURIO_SHARED_DATA", "./.curio/data/")
-    base_path = Path(launch_dir) / shared_disk_path
-    base_path = base_path.resolve()
+        return 'No artifact id specified', 400
 
-    requested_path = Path(file_name)
-    full_path = (base_path / requested_path).resolve()
-
-    if not str(full_path).startswith(str(base_path)):
-        return 'Invalid file path: %s'%full_path, 403
-
-    if not full_path.exists():
-        return 'File does not exist: %s'%full_path, 404
-
+    max_rows = 100
+    session_id = get_current_token()
     try:
-        # Using mmap for efficient memory-mapped loading
-        with open(full_path, "rb") as file:
-            with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file:
-                # Decompress and decode directly from the memory-mapped file
-                decompressed_data = zlib.decompress(mmapped_file[:])
-                data = json.loads(decompressed_data.decode('utf-8'))
+        t0 = time.perf_counter()
+        resp = _sandbox_session.get(
+            api_address + ":" + str(api_port) + "/get",
+            params={"fileName": file_name, "maxRows": max_rows, "sessionId": session_id},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"[/get-preview] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
+        
+        # Stream the Arrow byte-stream to frontend instead of JSON!
+        arrow_table = pa.Table.from_pylist(data)
+        sink = pa.BufferOutputStream()
 
-                if isinstance(data, str):
-                    data = json.loads(data)
-                
-                # Create preview version with limited rows
-                preview_data = create_preview_data(data)
-                
-                return jsonify(preview_data)
-
+        with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
+            writer.write_table(arrow_table)
+        
+        return Response(
+            sink.getvalue().to_pybytes(),
+            mimetype='application/vnd.apache.arrow.stream'
+        )
     except Exception as e:
         return f'Error loading preview: {str(e)}', 500
 
-def create_preview_data(data, max_rows=100):
-    """
-    Create a preview version of the data with limited rows.
-    Maintains the same structure but with fewer rows for display.
-    """
-    if not isinstance(data, dict):
-        return data
-    
-    # Handle dataframe format
-    if data.get('dataType') == 'dataframe' and 'data' in data:
-        df_data = data['data']
-        if isinstance(df_data, dict):
-            # Check if columns contain arrays (list format)
-            columns = list(df_data.keys())
-            if columns:
-                first_column_data = df_data[columns[0]]
-                
-                # Handle list format (most common)
-                if isinstance(first_column_data, list):
-                    total_rows = len(first_column_data)
-                    limited_rows = min(max_rows, total_rows)
-                    
-                    # Create limited data for each column
-                    limited_data = {}
-                    for column in columns:
-                        if isinstance(df_data[column], list):
-                            limited_data[column] = df_data[column][:limited_rows]
-                        else:
-                            limited_data[column] = df_data[column]
-                    
-                    # Create preview response
-                    preview = {
-                        **data,  # Keep all original metadata
-                        'data': limited_data,
-                        'preview': True,
-                        'previewRows': limited_rows,
-                        'totalRows': total_rows
-                    }
-                    return preview
-                
-                # Handle dictionary-indexed format
-                elif isinstance(first_column_data, dict):
-                    # Get keys (indices) and limit to max_rows
-                    all_indices = list(first_column_data.keys())
-                    limited_indices = all_indices[:max_rows]
-                    
-                    # Create limited data for each column
-                    limited_data = {}
-                    for column in columns:
-                        limited_data[column] = {
-                            idx: df_data[column][idx] 
-                            for idx in limited_indices 
-                            if idx in df_data[column]
-                        }
-                    
-                    # Create preview response
-                    preview = {
-                        **data,  # Keep all original metadata
-                        'data': limited_data,
-                        'preview': True,
-                        'previewRows': len(limited_indices),
-                        'totalRows': len(all_indices)
-                    }
-                    return preview
-    
-    # Handle geodataframe format  
-    elif data.get('dataType') == 'geodataframe' and 'data' in data:
-        gdf_data = data['data']
-        if isinstance(gdf_data, dict) and 'features' in gdf_data:
-            features = gdf_data['features']
-            if isinstance(features, list):
-                total_features = len(features)
-                limited_features = features[:max_rows]
-                
-                preview = {
-                    **data,  # Keep all original metadata
-                    'data': {
-                        **gdf_data,
-                        'features': limited_features
-                    },
-                    'preview': True,
-                    'previewRows': len(limited_features),
-                    'totalRows': total_features
-                }
-                return preview
-    
-    # Return original data if format not recognized
-    return data
 
 @bp.route('/processPythonCode', methods=['POST'])
+@require_auth
 def process_python_code():
+    import time as _time
+    t0 = _time.perf_counter()
 
     code = request.json['code']
     nodeType = request.json['nodeType']
-    input = {'path': "", 'dataType': ""}
-    if(request.json['input']):
-        req_input = request.json['input']
-        if(req_input['dataType'] == 'outputs' and 'data' in req_input):
-            # Multiple outputs from a MergeFlowNode: 'data' is a list of output objects
-            input['path'] = req_input['data']
-            input['dataType'] = 'outputs'
-        elif('filename' in req_input):
-            # Single file reference — load from file; the file itself embeds the real dataType.
-            # Avoid passing 'outputs' here so the wrapper loads the file normally via load_memory_mapped_file.
-            input['path'] = req_input['filename']
-            input['dataType'] = req_input['dataType'] if req_input['dataType'] != 'outputs' else 'file'
-        elif('path' in req_input):
-            input['path'] = req_input['path']
-            input['dataType'] = req_input['dataType'] if req_input['dataType'] != 'outputs' else 'file'
+    input = _parse_input_ref(request.json.get('input'))
+
+    session_id = get_current_token()
+    t1 = _time.perf_counter()
+    response = _sandbox_session.post(api_address+":"+str(api_port)+"/exec",
+                            data=json.dumps({
+                                "code": code,
+                                "file_path": input['path'],
+                                "nodeType": nodeType,
+                                "dataType": input['dataType'],
+                                "session_id": session_id,
+                            }),
+                            headers={"Content-Type": "application/json"},
+                            timeout=120)
+    t2 = _time.perf_counter()
+
     try:
-        response = requests.post(api_address+":"+str(api_port)+"/exec",
-                                data=json.dumps({
-                                    "code": code,
-                                    "file_path": input['path'],
-                                    "nodeType": nodeType,
-                                    "dataType": input['dataType']
-                                }),
-                                headers={"Content-Type": "application/json"},
-                                )
-        
-        try:
-            response = response.json()
-            stdout = response['stdout']
-            stderr = response['stderr']
-            output = response['output'] # contains path and dataType
-            print(output, flush=True)
-            
-            return {'stdout': stdout, 'stderr': stderr, 'input': input, 'output': output}
-        finally:
-            pass
-    finally:
-        pass
+        response_json = response.json()
+    except Exception as e:
+        print(f"[processPythonCode] sandbox /exec returned non-JSON: "
+              f"status={response.status_code} "
+              f"body={response.text[:500]!r}", flush=True)
+        return {
+            'stdout': '',
+            'stderr': f'Sandbox error: {e}',
+            'input': input,
+            'output': {}
+        }, 500
+
+    stdout = response_json['stdout']
+    stderr = response_json['stderr']
+    output = response_json['output']
+
+    t3 = _time.perf_counter()
+    print(
+        f"[backend /processPythonCode] parse={t1-t0:.3f}s"
+        f"  sandbox_rtt={t2-t1:.3f}s"
+        f"  json={t3-t2:.3f}s"
+        f"  total={t3-t0:.3f}s"
+        f"  node={nodeType}",
+        flush=True,
+    )
+
+    return {'stdout': stdout, 'stderr': stderr, 'input': input, 'output': output}
+
+
+@bp.route('/processJavaScriptCode', methods=['POST'])
+@require_auth
+def process_javascript_code():
+    import time as _time
+    t0 = _time.perf_counter()
+
+    code = request.json['code']
+    nodeType = request.json['nodeType']
+    input = _parse_input_ref(request.json.get('input'))
+
+    session_id = get_current_token()
+    t1 = _time.perf_counter()
+    response = _sandbox_session.post(
+        api_address + ":" + str(api_port) + "/execJs",
+        data=json.dumps({
+            "code": code,
+            "file_path": input['path'],
+            "nodeType": nodeType,
+            "dataType": input['dataType'],
+            "session_id": session_id,
+        }),
+        headers={"Content-Type": "application/json"},
+        timeout=120,
+    )
+    t2 = _time.perf_counter()
+
+    try:
+        response_json = response.json()
+    except Exception as e:
+        print(f"[processJavaScriptCode] sandbox /execJs returned non-JSON: "
+              f"status={response.status_code} "
+              f"body={response.text[:500]!r}", flush=True)
+        return {
+            'stdout': '',
+            'stderr': f'Sandbox error: {e}',
+            'input': input,
+            'output': {}
+        }, 500
+
+    stdout = response_json['stdout']
+    stderr = response_json['stderr']
+    output = response_json['output']
+
+    t3 = _time.perf_counter()
+    print(
+        f"[backend /processJavaScriptCode] parse={t1-t0:.3f}s"
+        f"  sandbox_rtt={t2-t1:.3f}s"
+        f"  json={t3-t2:.3f}s"
+        f"  total={t3-t0:.3f}s"
+        f"  node={nodeType}",
+        flush=True,
+    )
+
+    return {'stdout': stdout, 'stderr': stderr, 'input': input, 'output': output}
+
 
 @bp.route('/installPackages', methods=['POST'])
+@require_auth
 def install_packages():
     packages = request.json.get('packages', [])
     try:
-        response = requests.post(
+        response = _sandbox_session.post(
             api_address + ":" + str(api_port) + "/install",
             data=json.dumps({"packages": packages}),
             headers={"Content-Type": "application/json"},
+            timeout=120,
         )
         return response.json()
     finally:
         pass
 
 @bp.route('/toLayers', methods=['POST'])
+@require_auth
 def toLayers():
 
     if(request.json['geojsons'] == None):
@@ -572,1075 +429,37 @@ def toLayers():
             gpd.GeoDataFrame.from_features(geojson['features'])
     except Exception as e:
         print("GeoPandas validation failed:", e)
-    response = requests.post(api_address+":"+str(api_port)+"/toLayers",
+    response = _sandbox_session.post(api_address+":"+str(api_port)+"/toLayers",
                              data=json.dumps({
                                  "geojsons": request.json['geojsons']
                              }),
                              headers={"Content-Type": "application/json"},
-                             )
+                             timeout=60)
 
     return response.json()
 
-# @bp.route('/signin', methods=['POST'])
-# def signin():
-#     # google_oauth = GoogleOAuth()
-#     # user_data = google_oauth.verify_token(request.json.get('token'))
-#     # if not user_data:
-#     #     return jsonify({'error': 'Invalid token'}), 400
-
-#     # create new session token
-#     # new_session = UserSession(user_id=user.id)
-#     user_data = {
-#         'id': 1,
-#         'name': 'Test',
-#         'email': 'Test@mail.com',
-#         'provider': "",
-#         'uid': "",
-#         'picture': "",
-#         'type': 'programmer'
-#     }
-#     new_session = UserSession(user_id=user_data.get('id'))
-#     db.session.add(new_session)
-#     db.session.commit()
-
-
-#     # get user from database
-
-#     user = User.query.filter_by(
-#         id=user_data.get('id'),
-#         # provider=user_data.get('provider'),
-#         # provider_uid= user_data.get('uid')
-#     ).first()
-
-#     if user:
-#         user.name = user_data.get('name')
-#         user.profile_image = user_data.get('picture')
-#     else:
-#         user = User(
-#             email=user_data.get('email'),
-#             name=user_data.get('name'),
-#             profile_image=user_data.get('picture'),
-#             provider=user_data.get('provider'),
-#             provider_uid=user_data.get('uid'))
-#         db.session.add(user)
-#     db.session.commit()
-
-
-#     return jsonify({
-#         'user': {
-#             'name': user.name,
-#             'profile_image': user.profile_image,
-#             'type': user.type
-#         },
-#         'token': new_session.token
-#     }), 200
-
 @bp.route('/signin', methods=['POST'])
-def signin():
-    try:
-        google_oauth = GoogleOAuth()
-        user_data = google_oauth.verify_token(request.json.get('token'))
-
-        if not user_data:
-            return jsonify({'error': 'Invalid token'}), 400
-
-        user = User.query.filter_by(provider_uid=user_data['uid']).first()
-
-        if not user:
-            user = User(
-                email=user_data['email'],
-                name=user_data['name'],
-                profile_image=user_data['picture'],
-                type='programmer',  
-                provider='google',
-                provider_uid=user_data['uid']
-            )
-            db.session.add(user)
-            db.session.commit()
-
-        new_session = UserSession(user_id=user.id)
-        db.session.add(new_session)
-        db.session.commit()
-
-        return jsonify({
-            'user': {
-                'name': user.name,
-                'email': user.email,
-                'profile_image': user.profile_image,
-                'type': user.type,
-                'uid': user.provider_uid,
-                'provider': user.provider
-            },
-            'token': new_session.token
-        }), 200
-    
-    except:
-        # create new session token
-        user_data = {
-            'id': 1,
-            'name': 'Test',
-            'email': 'Test@mail.com',
-            'provider': "",
-            'uid': "",
-            'picture': "",
-            'type': 'programmer'
-        }
-        new_session = UserSession(user_id=user_data.get('id'))
-        db.session.add(new_session)
-        db.session.commit()
-
-
-        # get user from database
-
-        user = User.query.filter_by(
-            id=user_data.get('id'),
-            # provider=user_data.get('provider'),
-            # provider_uid= user_data.get('uid')
-        ).first()
-
-        if user:
-            user.name = user_data.get('name')
-            user.profile_image = user_data.get('picture')
-        else:
-            user = User(
-                email=user_data.get('email'),
-                name=user_data.get('name'),
-                profile_image=user_data.get('picture'),
-                provider=user_data.get('provider'),
-                provider_uid=user_data.get('uid'))
-            db.session.add(user)
-        db.session.commit()
-
-
-        return jsonify({
-            'user': {
-                'name': user.name,
-                'profile_image': user.profile_image,
-                'type': user.type
-            },
-            'token': new_session.token
-        }), 200
+def signin_legacy():
+    """Deprecated shim — redirects to /api/auth/signin/google."""
+    from flask import redirect
+    return redirect('/api/auth/signin/google', code=308)
 
 @bp.route('/getUser', methods=['GET'])
-@require_auth
-def get_user():
-    user = g.user
-    return jsonify({
-        'user': {
-            'name': user.name,
-            'profile_image': user.profile_image,
-            'type': user.type
-        }
-    }), 200
+def get_user_legacy():
+    """Deprecated shim — redirects to /api/auth/me."""
+    from flask import redirect
+    return redirect('/api/auth/me', code=308)
 
 @bp.route('/saveUserType', methods=['POST'])
-@require_auth
-def save_user_type():
-    new_type = request.json.get('type')
-    user = g.user
-    user.type = new_type
-    db.session.commit()
-
-    return jsonify({
-        'user': {
-            'name': user.name,
-            'profile_image': user.profile_image,
-            'type': user.type
-        }
-    }), 200
-
-@bp.route('/saveUserProv', methods=['POST'])
-def save_user_prov(): # only save if user with that name does not exist on the database
-
-    # conn = sqlite3.connect('backend/provenance.db')
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    user = request.json.get('user')
-
-    # Check if the user_name already exists in the table
-    cursor.execute('''SELECT 1 FROM user WHERE user_name = ?''', (user['user_name'],))
-    existing_record = cursor.fetchone()
-
-    if not existing_record:
-        data_to_insert = (user['user_name'], user['user_type'], user['user_IP'])
-        cursor.execute('''INSERT INTO user (user_name, user_type, user_IP)
-                        VALUES (?, ?, ?)''', data_to_insert)
-
-    conn.commit()
-    conn.close()
-
-    return "",200
-
-@bp.route('/saveWorkflowProv', methods=['POST'])
-def save_workflow_prov():
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    workflow_name = request.json.get('workflow')
-
-    # starting a new version counter for the workflow
-    cursor.execute('''INSERT INTO version (version_number)
-                    VALUES (?)''', ('1.0',))
-
-    conn.commit()
-
-    # id of the new just added version element
-    version_id = cursor.lastrowid
-
-    # creating new versioned element for the new workflow
-    cursor.execute('''INSERT INTO versionedElement (version_id)
-                    VALUES (?)''', (version_id,))
-
-    conn.commit()
-
-    # id of the new just added versioned element
-    ve_id = cursor.lastrowid
-
-    # creating new workflow
-    cursor.execute('''INSERT INTO workflow (workflow_name, ve_id)
-                    VALUES (?, ?)''', (workflow_name, ve_id,))
-
-    conn.commit()
-    conn.close()
-
-    return "",200
-
-@bp.route('/newNodeProv', methods=['POST'])
-def new_node_prov():
-    data = request.json.get('data')
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    old_workflow_id, workflow_id = create_new_workflow_version(conn, data['workflow_name'])
-
-    # // create relation for new activity (output relation)
-    # // new activity (pointing to the new workflow and to the new relation as output)
-    # // duplicate all activities that point to the old workflow and point to the new one (duplicate relations tied to activities)
-
-    # creating relation for new activity
-    cursor.execute('''INSERT INTO relation (relation_name)
-                VALUES (?)''', (data['activity_name']+"_"+"out",))
-
-    conn.commit()
-
-    # id of the new just added relation
-    output_relation_id = cursor.lastrowid
-    input_relation_id = cursor.lastrowid
-
-    nodeType = data['activity_name'].split("-")[0]
-
-    for outputType in get_output_types(nodeType):
-        if outputType in attributeIds:
-            cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
-                VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
-
-    # creating new activity
-    cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id)
-                    VALUES (?, ?, ?, ?)''', (workflow_id, data['activity_name'], input_relation_id, output_relation_id,))
-
-    conn.commit()
-
-    # getting all activities that point to the old workflow
-    cursor.execute("SELECT activity_name, input_relation_id, output_relation_id, ve_id FROM activity WHERE workflow_id = ?", (old_workflow_id,))
-
-    activities = cursor.fetchall()
-
-    duplicated_output_relations = {} # dict of old to new ids.
-
-    duplicated_activities_ids = []
-
-    # duplicating all activities and making them point to the new workflow
-    for activity in activities:
-
-        # getting the old output relation of duplicated activity
-        cursor.execute("SELECT relation_id, relation_name FROM relation WHERE relation_id = ?", (activity[2],))
-        old_output_relation = cursor.fetchone()
-
-        # # duplicate the old output relation
-        # cursor.execute('''INSERT INTO relation (relation_name)
-        #             VALUES (?)''', (old_output_relation[1],))
-
-        # conn.commit()
-
-        # # id of the new just added relation
-        # output_relation_id = cursor.lastrowid
-
-        nodeType = activity[0].split("-")[0]
-
-        # # adding a attributeRelation to each output type that this activity supports
-        # for outputType in get_output_types(nodeType):
-        #     if outputType in attributeIds:
-        #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
-        #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
-
-        # duplicated_output_relations[old_output_relation[0]] = output_relation_id # mapping old to new ids
-
-        # cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-        #         VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], output_relation_id, activity[3],))
-
-        cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-                VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], old_output_relation[0], activity[3],))
-
-        conn.commit()
-
-        # id of the new just added activity
-        activity_id = cursor.lastrowid
-
-        duplicated_activities_ids.append(activity_id)
-
-    # # updating duplicated activities to point to the duplicated relations
-    # for old_output_id in duplicated_output_relations:
-    #     cursor.execute("SELECT activity_id FROM activity WHERE input_relation_id = ?", (old_output_id,))
-    #     activities = cursor.fetchall()
-
-    #     for activity in activities:
-    #         if activity[0] in duplicated_activities_ids: # this is a duplicated activity that needs to have input field updated to point to new duplicated relation
-    #             cursor.execute("UPDATE activity SET input_relation_id = ? WHERE activity_id = ?", (duplicated_output_relations[old_output_id], activity[0],))
-    #             conn.commit()
-
-    conn.commit()
-    conn.close()
-
-    # // TODO: new and duplicated activities can also be versioned by creating a new versioned element
-    return "",200
-
-@bp.route('/deleteNodeProv', methods=['POST'])
-def delete_node_prov():
-    data = request.json.get('data')
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    old_workflow_id, workflow_id = create_new_workflow_version(conn, data['workflow_name'])
-
-    # // duplicate all activities (but the excluded node) that point to the old workflow and point to the new one
-
-    # getting all activities that point to the old workflow
-    cursor.execute("SELECT activity_name, input_relation_id, output_relation_id, ve_id FROM activity WHERE workflow_id = ?", (old_workflow_id,))
-
-    activities = cursor.fetchall()
-
-    duplicated_output_relations = {} # dict of old to new ids.
-
-    duplicated_activities_ids = []
-
-    # duplicating all activities (except deleted one) and making them point to the new workflow
-    for activity in activities:
-        if(activity[0] != data['activity_name']):
-
-            # getting the old output relation of duplicated activity
-            cursor.execute("SELECT relation_id, relation_name FROM relation WHERE relation_id = ?", (activity[2],))
-            old_output_relation = cursor.fetchone()
-
-            # # duplicate the old output relation
-            # cursor.execute('''INSERT INTO relation (relation_name)
-            #             VALUES (?)''', (old_output_relation[1],))
-
-            # conn.commit()
-
-            # # id of the new just added relation
-            # output_relation_id = cursor.lastrowid
-
-            nodeType = activity[0].split("-")[0]
-
-            # # adding a attributeRelation to each output type that this activity supports
-            # for outputType in get_output_types(nodeType):
-            #     if outputType in attributeIds:
-            #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
-            #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
-
-            # duplicated_output_relations[old_output_relation[0]] = output_relation_id # mapping old to new ids
-
-            # cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-            #         VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], output_relation_id, activity[3],))
-
-            cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-                    VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], old_output_relation[0], activity[3],))
-
-            conn.commit()
-
-            # id of the new just added activity
-            activity_id = cursor.lastrowid
-
-            duplicated_activities_ids.append(activity_id)
-
-    # # updating duplicated activities to point to the duplicated relations
-    # for old_output_id in duplicated_output_relations:
-    #     cursor.execute("SELECT activity_id FROM activity WHERE input_relation_id = ?", (old_output_id,))
-    #     activities = cursor.fetchall()
-
-    #     for activity in activities:
-    #         if activity[0] in duplicated_activities_ids: # this is a duplicated activity that needs to have input field updated to point to new duplicated relation
-    #             cursor.execute("UPDATE activity SET input_relation_id = ? WHERE activity_id = ?", (duplicated_output_relations[old_output_id], activity[0],))
-    #             conn.commit()
-
-    conn.commit()
-    conn.close()
-
-    # // TODO: new and duplicated activities can also be versioned by creating a new versioned element
-
-    return "",200
-
-@bp.route('/newConnectionProv', methods=['POST'])
-def new_connection_prov():
-    """
-    Creates a new version of a workflow by adding a new connection and updating input/output relations_id.
-    """
-    data = request.json.get('data')
-    if not data or not all(k in data for k in ['workflow_name', 'sourceNodeType', 'sourceNodeId', 'targetNodeType', 'targetNodeId']):
-        return jsonify({"error": "Invalid payload. Missing required keys."}), 400
-
-    conn = None
-    try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        old_workflow_id, new_workflow_id = create_new_workflow_version(conn, data['workflow_name'])
-
-        # 4. Duplicate activities from the old workflow to the new one
-        cursor.execute("SELECT * FROM activity WHERE workflow_id = ?", (old_workflow_id,))
-        old_activities = cursor.fetchall()
-
-        for activity in old_activities:
-            # Insert a copy of the activity pointing to the new workflow
-            cursor.execute("""
-                INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                new_workflow_id,
-                activity['activity_name'],
-                activity['input_relation_id'],   
-                activity['output_relation_id'],  
-                activity['ve_id']
-            ))
-
-        # 5. Apply the new connection to the newly created activities
-        
-        # Get the output relation from the source activity (in the new workflow)
-        source_activity_name = f"{data['sourceNodeType']}-{data['sourceNodeId']}"
-        cursor.execute("""
-            SELECT output_relation_id FROM activity
-            WHERE workflow_id = ? AND activity_name = ?
-        """, (new_workflow_id, source_activity_name))
-        source_activity_output = cursor.fetchone()
-
-        if not source_activity_output:
-            raise ValueError(f"Source activity '{source_activity_name}' not found in the new workflow.")
-
-        # Update the input relation of the target activity (in the new workflow)
-        target_activity_name = f"{data['targetNodeType']}-{data['targetNodeId']}"
-        cursor.execute("""
-            UPDATE activity
-            SET input_relation_id = ?
-            WHERE workflow_id = ? AND activity_name = ?
-        """, (source_activity_output['output_relation_id'], new_workflow_id, target_activity_name))
-        
-        # If we got here, everything went well. Commit the transaction.
-        conn.commit()
-        
-        return jsonify({"message": "New workflow version created successfully.", "new_workflow_id": new_workflow_id}), 200
-
-    except sqlite3.Error as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": "Database error occurred.", "details": str(e)}), 500
-    except (ValueError, TypeError) as e:
-        if conn:
-            conn.rollback()
-        return jsonify({"error": "Application data or logic error.", "details": str(e)}), 400
-    finally:
-        if conn:
-            conn.close()
-
-@bp.route('/deleteConnectionProv', methods=['POST'])
-def delete_connection_prov():
-    data = request.json.get('data')
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    old_workflow_id, workflow_id = create_new_workflow_version(conn, data['workflow_name'])
-
-    # // duplicate all activities that point to the old workflow and point to the new one (duplicate relations tied to activities)
-    # // update input relation of the activity to NULL
-
-    # getting all activities that point to the old workflow
-    cursor.execute("SELECT activity_name, input_relation_id, output_relation_id, ve_id FROM activity WHERE workflow_id = ?", (old_workflow_id,))
-
-    activities = cursor.fetchall()
-
-    duplicated_output_relations = {} # dict of old to new ids.
-
-    duplicated_activities_ids = []
-
-    # duplicating all activities and making them point to the new workflow
-    for activity in activities:
-
-        # getting the old output relation of duplicated activity
-        cursor.execute("SELECT relation_id, relation_name FROM relation WHERE relation_id = ?", (activity[2],))
-        old_output_relation = cursor.fetchone()
-
-        # # duplicate the old output relation
-        # cursor.execute('''INSERT INTO relation (relation_name)
-        #             VALUES (?)''', (old_output_relation[1],))
-
-        # conn.commit()
-
-        # # id of the new just added relation
-        # output_relation_id = cursor.lastrowid
-
-        nodeType = activity[0].split("-")[0]
-
-        # # adding a attributeRelation to each output type that this activity supports
-        # for outputType in get_output_types(nodeType):
-        #     if outputType in attributeIds:
-        #         cursor.execute('''INSERT INTO attributeRelation (attribute_id, relation_id)
-        #             VALUES (?, ?)''', (attributeIds[outputType], output_relation_id,))
-
-        # duplicated_output_relations[old_output_relation[0]] = output_relation_id # mapping old to new ids
-
-        # cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-        #         VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], output_relation_id, activity[3],))
-
-        cursor.execute('''INSERT INTO activity (workflow_id, activity_name, input_relation_id, output_relation_id, ve_id)
-                VALUES (?, ?, ?, ?, ?)''', (workflow_id, activity[0], activity[1], old_output_relation[0], activity[3],))
-
-        conn.commit()
-
-        # id of the new just added activity
-        activity_id = cursor.lastrowid
-
-        duplicated_activities_ids.append(activity_id)
-
-    # updating duplicated activities to point to the duplicated relations
-    for old_output_id in duplicated_output_relations:
-        cursor.execute("SELECT activity_id FROM activity WHERE input_relation_id = ?", (old_output_id,))
-        activities = cursor.fetchall()
-
-        for activity in activities:
-            if activity[0] in duplicated_activities_ids: # this is a duplicated activity that needs to have input field updated to point to new duplicated relation
-                cursor.execute("UPDATE activity SET input_relation_id = ? WHERE activity_id = ?", (duplicated_output_relations[old_output_id], activity[0],))
-                conn.commit()
-
-    # update input relation of the activity
-    cursor.execute("UPDATE activity SET input_relation_id = NULL WHERE workflow_id = ? AND activity_name = ?", (workflow_id, data['targetNodeType']+"-"+data['targetNodeId'],))
-
-    conn.commit()
-    conn.close()
-
-    return "",200
+def save_user_type_legacy():
+    """Deprecated shim — redirects to /api/auth/me (PATCH)."""
+    from flask import redirect
+    return redirect('/api/auth/me', code=308)
 
 @bp.route('/checkDB', methods=['GET'])
 def check_db():
-    
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    return "OK",200
-
-@bp.route('/nodeExecProv', methods=['POST'])
-def node_exec_prov():
-    data = request.json.get('data')
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # new workflow execution
-    # replicate all activity execution from old workflow execution (except the one related to the activity I'm currently running) and make them point to the new workflow execution
-    # create relation instances from the input and output relation id of the activity
-    # create the attribute values based on the attributes connected to the relations of the activity. The values are 1 if there is data of that type or 0 if there is not.
-    # new activity execution
-
-    # getting the id of the most recent execution of this workflow
-    cursor.execute('''
-        SELECT MAX(workflowexec_id)
-        FROM workflowExecution
-        JOIN workflow ON workflowExecution.workflow_id = workflow.workflow_id
-        WHERE workflow_name = ?
-    ''', (data['workflow_name'],))
-
-    workflowexec_id = cursor.fetchone()
-
-    # getting the most recent execution of this workflow
-    cursor.execute("SELECT workflowexec_id, workflow_id, workflowexec_start_time, workflowexec_end_time FROM workflowExecution WHERE workflowexec_id = ?", (workflowexec_id[0],))
-    old_workflow_execution = cursor.fetchone()
-
-    # getting last workflow create with this name
-    cursor.execute("SELECT * FROM workflow WHERE workflow_id = (SELECT MAX(workflow_id) FROM workflow WHERE workflow_name = ?)", (data['workflow_name'],))
-    workflow = cursor.fetchone()
-
-    # getting activity attached to this workflow
-    cursor.execute("SELECT activity_id, input_relation_id, output_relation_id FROM activity WHERE workflow_id = ? AND activity_name = ?", (workflow[0], data['activity_name'],))
-    activity = cursor.fetchone()
-
-    # creating new workflow execution
-
-    if(data['interaction'] == True):
-        time.sleep(1) #Ensure that interaction is in the table before node_exec_prov executes. Consider finding a better approach for this logic.
-
-        cursor.execute("SELECT int_id FROM interaction ORDER BY int_id DESC LIMIT 1")
-        _int_row = cursor.fetchone()
-        if _int_row is None:
-            conn.close()
-            return jsonify({'error': 'No interaction record found'}), 400
-        int_id = _int_row[0]
-
-
-        cursor.execute('''INSERT INTO workflowExecution (workflowexec_start_time, workflowexec_end_time, workflow_id, int_id)
-                        VALUES (?, ?, ?, ?)''', (data["activityexec_start_time"], data["activityexec_end_time"], workflow[0], int_id))
-
-        conn.commit()
-    else:
-        cursor.execute('''INSERT INTO workflowExecution (workflowexec_start_time, workflowexec_end_time, workflow_id)
-                VALUES (?, ?, ?)''', (data["activityexec_start_time"], data["activityexec_end_time"], workflow[0],))
-
-        conn.commit()
-
-
-    # id of the new just added workflowExecution
-    workflowExecution_id = cursor.lastrowid
-
-    old_activity_executions = []
-
-    if(old_workflow_execution != None):
-        # getting all activity execution from the old workflow execution except the one related to the activity
-        cursor.execute("SELECT activity_id, activityexec_start_time, activityexec_end_time, input_ri_id, output_ri_id, activity_source_code FROM activityExecution WHERE workflowexec_id = ? AND activity_id <> ?", (old_workflow_execution[0], activity[0],))
-        old_activity_executions = cursor.fetchall()
-
-    input_relation_id = activity[1]
-    output_relation_id = activity[2]
-
-    # get the most recent relationInstance of the input relation
-    cursor.execute("SELECT re_id FROM relationInstance WHERE re_id = (SELECT MAX(re_id) FROM relationInstance WHERE relation_id = ?)", (input_relation_id,))
-    relation_instance_input = cursor.fetchone()
-
-    if(relation_instance_input != None):
-        # creating relation instances
-        cursor.execute('''INSERT INTO relationInstance (relation_id, original_ri)
-                        VALUES (?, ?)''', (input_relation_id, relation_instance_input[0],))
-    else:
-        # creating relation instances
-        cursor.execute('''INSERT INTO relationInstance (relation_id)
-                        VALUES (?)''', (input_relation_id,))
-
-    conn.commit()
-
-    input_ri_id = cursor.lastrowid
-
-    # # get the most recent relationInstance of the output relation
-    # cursor.execute("SELECT re_id FROM relationInstance WHERE re_id = (SELECT MAX(re_id) FROM relationInstance WHERE relation_id = ?)", (output_relation_id,))
-    # relation_instance_output = cursor.fetchone()
-
-    # if(relation_instance_output != None):
-    #     cursor.execute('''INSERT INTO relationInstance (relation_id, original_ri)
-    #                     VALUES (?)''', (output_relation_id, relation_instance_output[0]))
-    # else:
-    #     # creating relation instances
-    #     cursor.execute('''INSERT INTO relationInstance (relation_id)
-    #                     VALUES (?)''', (output_relation_id,))
-
-    # creating relation instances
-    cursor.execute('''INSERT INTO relationInstance (relation_id)
-                    VALUES (?)''', (output_relation_id,))
-
-    conn.commit()
-
-    output_ri_id = cursor.lastrowid
-
-    # getting types names and ids of attributes of input relation
-    cursor.execute('''SELECT attribute.attribute_id, attribute.attribute_name
-                        FROM relation
-                        JOIN attributeRelation ON relation.relation_id = attributeRelation.relation_id
-                        JOIN attribute ON attributeRelation.attribute_id = attribute.attribute_id
-                        WHERE attribute.attribute_type = ? AND relation.relation_id = ?''', ('Data', input_relation_id))
-
-    input_attributes = cursor.fetchall()
-
-    # getting types names and ids of attributes of output relation
-    cursor.execute('''SELECT attribute.attribute_id, attribute.attribute_name
-                        FROM relation
-                        JOIN attributeRelation ON relation.relation_id = attributeRelation.relation_id
-                        JOIN attribute ON attributeRelation.attribute_id = attribute.attribute_id
-                        WHERE attribute.attribute_type = ? AND relation.relation_id = ?''', ('Data', output_relation_id))
-
-    output_attributes = cursor.fetchall()
-
-
-    for input_attribute in input_attributes:
-        # creating attributeValues (use types_input for get_node_graph value='1' filter)
-        val = str(data.get('types_input', {}).get(input_attribute[1], 0))
-        cursor.execute('''INSERT INTO attributeValue (attribute_id, ri_id, value)
-                VALUES (?, ?, ?)''', (input_attribute[0], input_ri_id, val))
-        conn.commit()
-
-    for output_attribute in output_attributes:
-        # creating attributeValues (use types_output for get_node_graph value='1' filter)
-        val = str(data.get('types_output', {}).get(output_attribute[1], 0))
-        cursor.execute('''INSERT INTO attributeValue (attribute_id, ri_id, value)
-                VALUES (?, ?, ?)''', (output_attribute[0], output_ri_id, val))
-        conn.commit()
-
-    # duplicating all old activity executions of this workflow
-    for old_activity_execution in old_activity_executions:
-        cursor.execute('''INSERT INTO activityExecution (activity_id, workflowexec_id, activityexec_start_time, activityexec_end_time, input_ri_id, output_ri_id, activity_source_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?)''', (old_activity_execution[0], workflowExecution_id, old_activity_execution[1], old_activity_execution[2], old_activity_execution[3], old_activity_execution[4], old_activity_execution[5]))
-
-        conn.commit()
-
-    # adding new activityExecution
-    cursor.execute('''INSERT INTO activityExecution (activity_id, workflowexec_id, activityexec_start_time, activityexec_end_time, input_ri_id, output_ri_id, activity_source_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?)''', (activity[0], workflowExecution_id, data['activityexec_start_time'], data['activityexec_end_time'], input_ri_id, output_ri_id, data["activity_source_code"]))
-
-    conn.commit()
-    conn.close()
-
-    return "",200
-
-@bp.route('/getNodeGraph', methods=['POST'])
-def get_node_graph():
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    data = request.json.get('data')
-
-    # last workflow created with this name
-    cursor.execute("SELECT workflow_id FROM workflow WHERE workflow_id = (SELECT MAX(workflow_id) FROM workflow WHERE workflow_name = ?)", (data['workflow_name'],))
-    workflow = cursor.fetchone()
-
-    # activity
-    cursor.execute("SELECT activity_id FROM activity WHERE workflow_id = ? AND activity_name = ?", (workflow[0], data['activity_name'],))
-    activity = cursor.fetchone()
-
-    # all the executions of this activity in the order they were executed
-    cursor.execute("SELECT activityexec_id, input_ri_id, output_ri_id, activity_source_code FROM activityExecution WHERE activity_id = ? ORDER BY activityexec_id ASC", (activity[0],))
-    activity_executions = cursor.fetchall()
-
-    # getting the list of all attribute values for input of all executions of this activity
-    cursor.execute('''SELECT activityExecution.activityexec_id, attribute.attribute_name
-                        FROM activityExecution
-                        JOIN attributeValue ON activityExecution.input_ri_id = attributeValue.ri_id
-                        JOIN attribute ON attribute.attribute_id = attributeValue.attribute_id
-                        WHERE activityExecution.activity_id = ? AND value = ? AND attribute.attribute_type = ?''', (activity[0], '1', 'Data'))
-    input_types = cursor.fetchall()
-
-    # getting the list of all attribute values for input of all executions of this activity
-    cursor.execute('''SELECT activityExecution.activityexec_id, attribute.attribute_name
-                        FROM activityExecution
-                        JOIN attributeValue ON activityExecution.output_ri_id = attributeValue.ri_id
-                        JOIN attribute ON attribute.attribute_id = attributeValue.attribute_id
-                        WHERE activityExecution.activity_id = ? AND value = ? AND attribute.attribute_type = ?''', (activity[0], '1', 'Data'))
-    output_types = cursor.fetchall()
-
-    mapIdToTypes_input = {} # activity execution id to array of input types
-    mapIdToTypes_output = {} # activity execution id to array of output types
-
-    for input_type in input_types:
-
-        if input_type[0] not in mapIdToTypes_input:
-            mapIdToTypes_input[input_type[0]] = [input_type[1]]
-        else:
-            mapIdToTypes_input[input_type[0]].append(input_type[1])
-
-    for output_type in output_types:
-
-        if output_type[0] not in mapIdToTypes_output:
-            mapIdToTypes_output[output_type[0]] = [output_type[1]]
-        else:
-            mapIdToTypes_output[output_type[0]].append(output_type[1])
-
-    graph = []
-
-    for activity_execution in activity_executions:
-
-        if activity_execution[0] not in mapIdToTypes_input:
-            mapIdToTypes_input[activity_execution[0]] = []
-
-        if activity_execution[0] not in mapIdToTypes_output:
-            mapIdToTypes_output[activity_execution[0]] = []
-
-        node = {
-            "id": activity_execution[0],
-            "code": activity_execution[3],
-            "inputs": mapIdToTypes_input[activity_execution[0]],
-            "outputs": mapIdToTypes_output[activity_execution[0]]
-        }
-
-        graph.append(node)
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "graph": graph
-    }),200
-
-@bp.route('/truncateDBProv', methods=['GET'])
-def truncate_db_prov():
-
-    # db_path = os.path.join(os.getcwd(), ".curio", "provenance.db")
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Fetch the list of tables in the database
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
-    for table in tables:
-        # Get the table name from the tuple
-        table_name = table[0]
-        # Execute a DELETE statement to truncate the table
-        cursor.execute(f"DELETE FROM {table_name};")
-
-    cursor.execute("INSERT INTO ATTRIBUTE(attribute_id, attribute_name, attribute_type) VALUES (1, 'DATAFRAME', 'Data');")
-    cursor.execute("INSERT INTO ATTRIBUTE(attribute_id, attribute_name, attribute_type) VALUES (2, 'GEODATAFRAME', 'Data');")
-    cursor.execute("INSERT INTO ATTRIBUTE(attribute_id, attribute_name, attribute_type) VALUES (3, 'VALUE', 'Data');")
-    cursor.execute("INSERT INTO ATTRIBUTE(attribute_id, attribute_name, attribute_type) VALUES (4, 'LIST', 'Data');")
-    cursor.execute("INSERT INTO ATTRIBUTE(attribute_id, attribute_name, attribute_type) VALUES (5, 'JSON', 'Data');")
-
-    conn.commit()
-    conn.close()
-
-    return "",200
-
-@bp.route('/insert_attribute_value_change', methods=['POST'])
-def insert_attribute_value_change():
-    data = request.json.get('data')
-    activity_name = data.get('activity_name')
-
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    try:
-        # 1. Search act ID
-        cursor.execute("SELECT activity_id, input_relation_id FROM activity WHERE activity_name = ?", (activity_name,))
-        activity = cursor.fetchone()
-        if not activity:
-            return {'message': f'Activity "{activity_name}" not found'}, 404
-        activity_id, input_relation_id = activity
-
-        cursor.execute("SELECT int_id FROM interaction ORDER BY int_id DESC LIMIT 1")
-        interaction = cursor.fetchone()
-
-        if interaction is None:
-            return {'message': 'Interaction not found'}, 404
-
-        int_id = interaction[0]
-
-        # 2. Fetch the last attributeValue linked to the relationship
-
-
-        cursor.execute("""
-            SELECT re_id
-            FROM relationInstance
-            WHERE relation_id = ?
-            ORDER BY re_id DESC
-        """, (input_relation_id,))
-
-        relation_id = [row[0] for row in cursor.fetchall()]     
-
-        placeholders = ', '.join(['?'] * len(relation_id))
-
-        cursor.execute(f"""
-        SELECT av_id, value
-        FROM attributeValue
-        WHERE ri_id IN ({placeholders})
-        ORDER BY av_id DESC
-        """, relation_id)
-
-        attr = cursor.fetchall()
-
-        attr = [row for row in attr if row[1] not in (None, '')][0]
-
-        
-
-        if not attr:
-            return {'message': 'No attribute value found for the relationship of this activity'}, 404
-        av_id, old_value = attr
-
-        # 3. Insert value change
-        cursor.execute("""
-            INSERT INTO attributeValueChange (av_id, int_id, old_value)
-            VALUES (?, ?, ?)
-        """, (av_id, int_id, old_value))
-        conn.commit()
-
-        return {'message': 'Value change successfully recorded'}, 201
-
-    except Exception as e:
-        conn.rollback()
-        return {'error': str(e)}, 500
-
-    finally:
-        cursor.close()
-        conn.close()
-
-
-@bp.route('/insert_visualization', methods=['POST'])
-def insert_visualization():
-    data = request.json.get('data')
-    activity_name = data.get('activity_name')
-
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-
-    try: 
-        # mapping id executions
-        cursor.execute("SELECT vis_path, vis_content, activityexec_id from visualization")
-        old_activityexec_id = cursor.fetchall()
-
-        for vis in old_activityexec_id:
-            # Restoring the activity IDs
-            cursor.execute("SELECT activity_id FROM activityExecution WHERE activityexec_id = ? ORDER BY activityexec_id DESC LIMIT 1",
-            (vis[2],))
-            activity_id = cursor.fetchone()[0]
-            # Fetching new execution ID
-            cursor.execute("SELECT activityexec_id FROM activityExecution WHERE activity_id = ? ORDER BY activityexec_id DESC LIMIT 1",
-            (activity_id,))
-            activityexec_id = cursor.fetchone()[0]
-
-            cursor.execute("""
-            INSERT INTO visualization (vis_path, vis_content, activityexec_id)
-            VALUES (?, ?, ?)
-            """, (vis[0], vis[1], activityexec_id))
-            
-            
-            conn.commit()            
-    except: 
-        pass
-
-
-    try:
-        # 1. Search act id
-        cursor.execute("SELECT activity_id FROM activity WHERE activity_name = ? ORDER BY activity_id DESC LIMIT 1",
-            (activity_name,))
-        activity = cursor.fetchone()
-        if not activity:
-            return {'message': f'Atividade "{activity_name}" não encontrada.'}, 404
-        activity_id = activity[0]
-
-        # 2. Fetch the execution ID of the most recent activity
-
-        cursor.execute("SELECT activityexec_id FROM activityExecution WHERE activity_id = ? ORDER BY activityexec_id DESC LIMIT 1",
-            (activity_id,))
-        activityExecution = cursor.fetchone()
-        if not activityExecution:
-            return jsonify({'error': f'No execution found for activity "{activity_name}"'}), 400
-        activityExecution_id = activityExecution[0]
-
-        # 3. Getting the name of the visualization node
-
-        match = re.match(r"([A-Z]+_[A-Z]+)-", activity_name)
-        vis_name = match.group(1)
-
-        # 4. Adding to the Visualization table
-
-        cursor.execute("""
-            INSERT INTO visualization (vis_path, vis_content, activityexec_id)
-            VALUES (?, ?, ?)
-        """, ("", vis_name, activityExecution_id))
-        conn.commit()
-
-        # 5. Deleting duplicates
-        cursor.execute("""
-        DELETE FROM visualization
-        WHERE vis_id NOT IN (
-            SELECT MIN(vis_id)
-            FROM visualization
-            GROUP BY activityexec_id
-            )
-        """)
-        conn.commit()
-
-        return {'message': 'Visualization registered successfully'}, 201
-
-    except Exception as e:
-        conn.rollback()
-        return {'error': str(e)}, 500
-
-    finally:
-        cursor.close()
-        conn.close()
-
-
-@bp.route('/insert_interaction', methods=['POST'])
-def insert_interaction():
-    data = request.json.get('data')
-    activity_name = data.get('activity_name')
-
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    try:
-
-        # 1. Search act id
-        cursor.execute("SELECT activity_id FROM activity WHERE activity_name = ? ORDER BY activity_id DESC LIMIT 1",
-            (activity_name,))
-        activity = cursor.fetchone()
-        if not activity:
-            return {'message': f'Atividade "{activity_name}" não encontrada.'}, 404
-        activity_id = activity[0]
-
-        # 2. Fetch the execution ID of the most recent activity
-
-        cursor.execute("SELECT activityexec_id FROM activityExecution WHERE activity_id = ? ORDER BY activityexec_id DESC LIMIT 1",
-            (activity_id,))
-        activityExecution = cursor.fetchone()
-        if not activityExecution:
-            return jsonify({'error': f'No execution found for activity "{activity_name}"'}), 400
-        activityExecution_id = activityExecution[0]
-
-        # 3. Searching the visualization table
-
-        cursor.execute("SELECT vis_id FROM visualization WHERE activityexec_id = ? ORDER BY activityexec_id DESC LIMIT 1",
-            (activityExecution_id,))
-        vis_row = cursor.fetchone()
-        if not vis_row:
-            return jsonify({'error': 'No visualization found for this activity execution'}), 400
-        vis_id = vis_row[0]
-
-        # 3. Inserting into the interaction table
-
-        cursor.execute("""
-            INSERT INTO interaction (int_time, user_id, vis_id)
-            VALUES (?, ?, ?)
-        """, (data['int_time'], "", vis_id))
-        conn.commit()
-
-        return {'message': 'Visualization successfully recorded'}, 201
-
-    except Exception as e:
-        conn.rollback()
-        return {'error': str(e)}, 500
-
-    finally:
-        cursor.close()
-        conn.close()
-
+    db.session.execute(db.text('SELECT 1'))
+    return "OK", 200
 
 def create_template_object(folder, filename, code):
     return {
@@ -1675,11 +494,11 @@ def generate_templates():
 
 @bp.route('/datasets', methods=['GET'])
 def list_datasets():
-    response = requests.get(api_address+":"+str(api_port)+"/datasets")
-    response.raise_for_status() 
+    response = requests.get(api_address+":"+str(api_port)+"/datasets", timeout=30)
+    response.raise_for_status()
     files = response.json()
     return jsonify(files)
-    
+
 
 @bp.route("/templates", methods=["GET"])
 def get_templates():
@@ -1742,13 +561,14 @@ def get_loaded_files_metadata(folder_path):
                     geometry_type = "Unreadable JSON"
         else:
             continue
-        
+
         metadata += f"File name: {file}\nColumns: {', '.join(columns)}\nGeometry type: {geometry_type}\n\n"
 
     return metadata
 
-@bp.route('/openAI', methods=['POST'])
-def llm_openaAI():
+@bp.route('/llm/chat', methods=['POST'])
+@require_auth
+def llm_chat():
     global conversation
 
     data = request.get_json()
@@ -1760,7 +580,7 @@ def llm_openaAI():
 
     past_conversation = []
 
-    if chatId != None and chatId in conversation:
+    if chatId is not None and chatId in conversation:
         past_conversation = conversation[chatId]
 
     prompt_preamble_file = open("./llm-prompts/"+preamble_file+".txt")
@@ -1775,96 +595,61 @@ def llm_openaAI():
     prompt_file_obj = open("./llm-prompts/"+prompt_file+".txt")
     prompt_text = prompt_file_obj.read()
 
-    if len(past_conversation) == 0: # Adding the prompt to the conversation
+    if len(past_conversation) == 0:
         past_conversation.append({"role": "system", "content": prompt_preamble + "\n" + prompt_text})
 
-    api_file = open("api.env")
-    api_key = api_file.read()
-
-    client = OpenAI(
-        api_key=api_key
-    )
-    
     past_conversation.append({"role": "user", "content": text})
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        store=True,
-        messages=past_conversation
-    )
-
-    # completion = client.chat.completions.create(
-    #     model="o3-mini",
-    #     store=True,
-    #     messages=past_conversation
-    # )
-
-    assistant_reply = completion.choices[0].message.content
+    api_key, api_type, base_url, model = _resolve_llm_config()
+    assistant_reply = _call_llm(api_key, api_type, base_url, model, past_conversation)
 
     past_conversation.append({"role": "assistant", "content": assistant_reply})
 
-    if chatId != None: # User want to save chat
+    if chatId is not None:
         conversation[chatId] = past_conversation
 
-    return jsonify({"result": completion.choices[0].message.content})
+    return jsonify({"result": assistant_reply})
 
-@bp.route('/checkUsageOpenAI', methods=['POST'])
-def check_usage_OpenAI():
-    global conversation
+@bp.route('/llm/check', methods=['POST'])
+@require_auth
+def llm_check():
     global tokens_left
     global last_refresh
 
+    # Non-openai_compatible providers don't have a per-minute token budget.
+    user = g.user
+    api_type = (user.llm_api_type if not user.is_guest else GUEST_LLM_API_TYPE) or "openai_compatible"
+    if api_type != "openai_compatible":
+        return jsonify({"result": "yes"})
+
     data = request.get_json()
-
-    preamble_file = data.get("preamble", None)
-    prompt_file = data.get("prompt", None)
-    text = data.get("text", None)
     chatId = data.get("chatId", None)
+    text = data.get("text", None)
 
-    past_conversation = []
+    past_conversation = list(conversation.get(chatId, []))
+    past_conversation.append({"role": "user", "content": text or ""})
 
-    if chatId != None and chatId in conversation:
-        past_conversation = conversation[chatId]
-
-    print("Current dir", os.getcwd())
-
-    prompt_preamble_file = open("./llm-prompts/"+preamble_file+".txt")
-    prompt_preamble = prompt_preamble_file.read()
-
-    prompt_file_obj = open("./llm-prompts/"+prompt_file+".txt")
-    prompt_text = prompt_file_obj.read()
-
-    if len(past_conversation) == 0: # Adding the prompt to the conversation
-        past_conversation.append({"role": "system", "content": prompt_preamble + "\n" + prompt_text})
-
-    past_conversation.append({"role": "user", "content": text})
-
-    total_tokens = 0
-
-    for message in past_conversation:
-        total_tokens += len(message["content"].split()) * 1.5 # estimating the number of tokens
-
-    print("total_tokens", total_tokens)
-    print("tokens_left", tokens_left)
+    total_tokens = sum(len(m["content"].split()) * 1.5 for m in past_conversation)
 
     now_time = time.time()
 
-    if((now_time - last_refresh) >= 60): # One minute passed
+    if (now_time - last_refresh) >= 60:
         tokens_left = 200000
 
-    if(tokens_left > total_tokens):
+    if tokens_left > total_tokens:
         tokens_left -= total_tokens
         return jsonify({"result": "yes"})
-    
+
     return jsonify({"result": (60 - (now_time - last_refresh))})
 
-@bp.route('/cleanOpenAIChat', methods=['GET'])
-def clean_openai_chat():
+@bp.route('/llm/clean', methods=['GET'])
+@require_auth
+def llm_clean():
     global conversation
 
     chatId = request.args.get('chatId', None)
 
-    if chatId == None:
+    if chatId is None:
         return jsonify({"message": "You need to specify which chatId is being cleaned"}), 400
 
     conversation[chatId] = []

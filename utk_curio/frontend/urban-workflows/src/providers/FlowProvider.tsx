@@ -24,7 +24,6 @@ import {
 } from "reactflow";
 import { ConnectionValidator } from "../ConnectionValidator";
 import { NodeType, EdgeType } from "../constants";
-import { useProvenanceContext } from "./ProvenanceProvider";
 import { TrillGenerator } from "../TrillGenerator";
 import { applyDashboardLayout } from "../utils/dashboardLayout";
 import { ensureMergeArrays, parseHandleIndex, setMergeSlot, clearMergeSlot } from "../utils/mergeFlowUtils";
@@ -51,6 +50,12 @@ export interface IPropagation {
 
 // applyNewOutputs = useCallback((newOutNodeId: string, newOutput: string)
 
+interface PlayAllState {
+    levels: string[][];
+    currentLevel: number;
+    pending: Set<string>;
+}
+
 interface FlowContextProps {
     nodes: Node[];
     edges: Edge[];
@@ -66,6 +71,9 @@ interface FlowContextProps {
     onNodesDelete: (changes: NodeChange[]) => void;
     setPinForDashboard: (nodeId: string, value: boolean) => void;
     setDashBoardMode: (value: boolean) => void;
+    dashboardOn: boolean;
+    dashboardLocked: boolean;
+    setDashboardLocked: React.Dispatch<React.SetStateAction<boolean>>;
     updatePositionWorkflow: (nodeId: string, position: any) => void;
     updatePositionDashboard: (nodeId: string, position: any) => void;
     applyNewOutput: (output: IOutput) => void;
@@ -98,6 +106,25 @@ interface FlowContextProps {
     eraseWorkflowSuggestions: () => void;
     acceptSuggestion: (nodeId: string) => void;
     updateKeywords: (trill: any) => void;
+
+    // Project state
+    projectId: string | null;
+    projectName: string;
+    projectDirty: boolean;
+    projectSavedAt: Date | null;
+    nodeExecStatus: Record<string, "stale" | "executed">;
+
+    // Project operations
+    saveCurrentProject: (nameOverride?: string) => Promise<any>;
+    saveAsNewProject: (name: string) => Promise<any>;
+    loadProject: (id: string) => Promise<any>;
+    discardProject: () => void;
+    markDirty: () => void;
+    markNodeExecuted: (nodeId: string) => void;
+    markNodeStale: (nodeId: string) => void;
+    playAllNodes: () => void;
+    playNodesUpTo: (targetNodeId: string) => void;
+    signalNodeExecDone: (nodeId: string) => void;
 }
 
 // Stable context for NodeContainer — only updates when goal/minimized change, NOT on node drag
@@ -150,6 +177,9 @@ export const FlowContext = createContext<FlowContextProps>({
     onNodesDelete: () => { },
     setPinForDashboard: () => { },
     setDashBoardMode: () => { },
+    dashboardOn: false,
+    dashboardLocked: true,
+    setDashboardLocked: () => { },
     updatePositionWorkflow: () => { },
     updatePositionDashboard: () => { },
     applyNewOutput: () => { },
@@ -182,16 +212,92 @@ export const FlowContext = createContext<FlowContextProps>({
     setPackages: () => {},
     addPackage: () => {},
     removePackage: () => {},
+
+    // Project defaults
+    projectId: null,
+    projectName: "",
+    projectDirty: false,
+    projectSavedAt: null,
+    nodeExecStatus: {},
+    saveCurrentProject: async () => {},
+    saveAsNewProject: async () => {},
+    loadProject: async () => {},
+    discardProject: () => {},
+    markDirty: () => {},
+    markNodeExecuted: () => {},
+    markNodeStale: () => {},
+    playAllNodes: () => {},
+    playNodesUpTo: () => {},
+    signalNodeExecDone: () => {},
 });
+
+function computeTopologicalLevels(nodes: Node[], edges: Edge[]): string[][] {
+    const directedEdges = edges.filter(
+        e => !(e.sourceHandle === "in/out" && e.targetHandle === "in/out")
+    );
+
+    const inDegree = new Map<string, number>();
+    const successors = new Map<string, string[]>();
+    for (const n of nodes) { inDegree.set(n.id, 0); successors.set(n.id, []); }
+    for (const e of directedEdges) {
+        inDegree.set(e.target, (inDegree.get(e.target) ?? 0) + 1);
+        successors.get(e.source)!.push(e.target);
+    }
+
+    const roots = nodes.filter(n => inDegree.get(n.id) === 0);
+    const isolated = roots.filter(n => (successors.get(n.id)?.length ?? 0) === 0).map(n => n.id);
+    const sources  = roots.filter(n => (successors.get(n.id)?.length ?? 0) > 0).map(n => n.id);
+
+    if (isolated.length === 0 && sources.length === 0) return [];
+
+    const levels: string[][] = [];
+    if (isolated.length > 0) levels.push(isolated);
+    if (sources.length > 0) levels.push(sources);
+
+    const remaining = new Map(inDegree);
+    const visited = new Set([...isolated, ...sources]);
+    let queue = sources;
+
+    while (queue.length > 0) {
+        const next: string[] = [];
+        for (const id of queue) {
+            for (const succ of successors.get(id) ?? []) {
+                remaining.set(succ, (remaining.get(succ) ?? 0) - 1);
+                if (remaining.get(succ) === 0 && !visited.has(succ)) {
+                    next.push(succ);
+                    visited.add(succ);
+                }
+            }
+        }
+        if (next.length > 0) levels.push(next);
+        queue = next;
+    }
+    return levels;
+}
 
 const FlowProvider = ({ children }: { children: ReactNode }) => {
     const { showToast } = useToastContext();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-    const [outputs, setOutputs] = useState<IOutput[]>([]);
+    const [outputs, _setOutputs] = useState<IOutput[]>([]);
+    const outputsRef = useRef<IOutput[]>([]);
+    const playAllStateRef = useRef<PlayAllState | null>(null);
+    const markNodeExecutedRef = useRef<(nodeId: string) => void>(() => {});
+    const markNodeStaleRef = useRef<(nodeId: string) => void>(() => {});
+    const markDirtyRef = useRef<() => void>(() => {});
+
+    const setOutputs = useCallback((fnOrValue: ((prev: IOutput[]) => IOutput[]) | IOutput[]) => {
+        _setOutputs((prev) => {
+            const next = typeof fnOrValue === "function" ? fnOrValue(prev) : fnOrValue;
+            outputsRef.current = next;
+            return next;
+        });
+    }, []);
     const [interactions, setInteractions] = useState<IInteraction[]>([]);
 
     const [dashboardPins, setDashboardPins] = useState<any>({}); // {[nodeId] -> boolean}
+    const [dashboardOn, setDashboardOn] = useState<boolean>(false);
+    const [dashboardLocked, setDashboardLocked] = useState<boolean>(true);
 
     const positionsInDashboardRef = useRef<any>({});
     const setPositionsInDashboard = (data: any) => {
@@ -204,41 +310,41 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
     };
 
     const reactFlow = useReactFlow();
-    const { newNode, addWorkflow, deleteNode, newConnection, deleteConnection } =
-        useProvenanceContext();
-
     const [loading, setLoading] = useState<boolean>(false);
 
-    const [workflowName, _setWorkflowName] = useState<string>("DefaultWorkflow");
+    const [workflowName, _setWorkflowName] = useState<string>("DefaultDataflow");
     const workflowNameRef = React.useRef(workflowName);
     const setWorkflowName = useCallback((data: any) => {
         workflowNameRef.current = data;
         _setWorkflowName(data);
     }, []);
 
-    const initializeProvenance = async () => {
+    const initializeProvenance = () => {
         setLoading(true);
-        await addWorkflow(workflowNameRef.current);
-        let empty_trill = TrillGenerator.generateTrill([], [], workflowNameRef.current);
-        TrillGenerator.intializeProvenance(empty_trill);
-        setLoading(false);
-    }
+        try {
+            const empty_trill = TrillGenerator.generateTrill(
+                [],
+                [],
+                workflowNameRef.current,
+            );
+            TrillGenerator.intializeProvenance(empty_trill);
+        } catch (e) {
+            console.error("initializeProvenance failed:", e);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
         initializeProvenance();
     }, []);
 
     const setDashBoardMode = (value: boolean) => {
+        setDashboardOn(value);
         if (value) {
+            setDashboardLocked(true);
             // When entering dashboard mode, apply the automatic layout
             setNodes((nds) => {
-                console.log('Current nodes before dashboard layout:', nds.map(n => ({
-                    id: n.id,
-                    type: n.type,
-                    position: n.position,
-                    pinned: dashboardPins[n.id]
-                })));
-
                 // Save current positions as workflow positions if not already set
                 const nodesWithWorkflowPositions = nds.map(node => ({
                     ...node,
@@ -248,47 +354,38 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                     },
                 }));
 
-                console.log('Applying dashboard layout to nodes:', nodesWithWorkflowPositions.length);
-                console.log('Dashboard pins:', dashboardPins);
-
                 const updatedNodes = applyDashboardLayout(nodesWithWorkflowPositions, edges, dashboardPins);
-
-                console.log('Updated nodes after layout:', updatedNodes.map(n => ({
-                    id: n.id,
-                    type: n.type,
-                    position: n.position,
-                    data: n.data
-                })));
 
                 // Update positions in the dashboard state
                 updatedNodes.forEach((node) => {
                     if (dashboardPins[node.id]) {
-                        console.log(`Updating dashboard position for node ${node.id}:`, node.position);
                         updatePositionDashboard(node.id, node.position);
                     }
                 });
 
-                return updatedNodes;
+                return updatedNodes.map(node => ({
+                    ...node,
+                    style: dashboardPins[node.id] ? node.style : { display: 'none' },
+                }));
             });
+            setEdges(eds => eds.map(e => ({ ...e, hidden: true })));
         } else {
             // When exiting dashboard mode, reset to workflow positions
             setNodes((nds) => {
-                const resetNodes = nds.map(node => {
+                return nds.map(node => {
                     const workflowPos = node.data.workflowPosition || node.position;
-                    console.log(`Resetting node ${node.id} to workflow position:`, workflowPos);
                     return {
                         ...node,
+                        style: undefined,
                         position: workflowPos,
                         data: {
                             ...node.data,
-                            // Clear temporary dashboard position
                             dashboardPosition: undefined,
                         },
                     };
                 });
-                console.log('Nodes after reset:', resetNodes);
-                return resetNodes;
             });
+            setEdges(eds => eds.map(e => ({ ...e, hidden: false })));
         }
     };
 
@@ -302,7 +399,10 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
 
     const setPinForDashboard = useCallback((nodeId: string, value: boolean) => {
         setDashboardPins((prev: any) => ({ ...prev, [nodeId]: value }));
-    }, [setDashboardPins]);
+        setNodes((nds: Node[]) =>
+            nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, dashboardPinned: value } } : n)
+        );
+    }, [setDashboardPins, setNodes]);
 
     const addNode = useCallback(
         (node: Node, customWorkflowName?: string, provenance?: boolean) => {
@@ -318,8 +418,13 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 return prev.concat(node);
             });
 
-            if (provenance) // If there should be provenance tracking
-                newNode((customWorkflowName ? customWorkflowName : workflowNameRef.current), (node.type as string) + "-" + node.id);
+            if (provenance) {
+                TrillGenerator.addNewVersionProvenance(
+                    [...reactFlow.getNodes(), node],
+                    reactFlow.getEdges(),
+                    workflowNameRef.current, "", "Node added"
+                );
+            }
         },
         [setNodes]
     );
@@ -372,16 +477,17 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             for (const connection of connections) {
                 const resetInput = connection.target;
                 const targetNode = reactFlow.getNode(connection.target) as Node;
+                markNodeStaleRef.current(connection.target);
 
                 // skiping syncronized connections
                 if (
                     connection.sourceHandle != "in/out" &&
                     connection.targetHandle != "in/out"
                 ) {
-                    deleteConnection(
-                        workflowNameRef.current,
-                        targetNode.id,
-                        targetNode.type as NodeType
+                    TrillGenerator.addNewVersionProvenance(
+                        reactFlow.getNodes(),
+                        reactFlow.getEdges().filter((e: Edge) => e.id !== connection.id),
+                        workflowNameRef.current, "", "Connection deleted"
                     );
                 }
 
@@ -432,12 +538,16 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 if (change.type === "remove" && 'id' in change) {
                     const node = reactFlow.getNode(change.id) as Node;
                     if (node) {
-                        deleteNode(workflowNameRef.current, node.type + "_" + node.id);
+                        TrillGenerator.addNewVersionProvenance(
+                            reactFlow.getNodes().filter((n: Node) => n.id !== change.id),
+                            reactFlow.getEdges(),
+                            workflowNameRef.current, "", "Node deleted"
+                        );
                     }
                 }
             }
         },
-        [setOutputs, reactFlow, deleteNode]
+        [setOutputs, reactFlow]
     );
 
     const onConnect = useCallback(
@@ -449,6 +559,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 connection.target,
                 connection.targetHandle
             );
+            markDirtyRef.current();
 
             const nodes = custom_nodes ? custom_nodes : reactFlow.getNodes();
             const edges = custom_edges ? custom_edges : reactFlow.getEdges();
@@ -558,6 +669,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 }
 
                 if (allowConnection) {
+                    markNodeStaleRef.current(connection.target as string);
                     applyOutput(
                         inNodeType as NodeType,
                         connection.target as string,
@@ -571,6 +683,13 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                             ...connection,
                             markerEnd: { type: MarkerType.ArrowClosed },
                         };
+
+                        // Ensure an id exists before storing in provenance — user-dragged
+                        // connections arrive as Connection (no id); addEdge assigns one later
+                        // but addNewVersionProvenance is called before that.
+                        if (!customConnection.id) {
+                            customConnection.id = `reactflow__edge-${connection.source}${connection.sourceHandle || ''}-${connection.target}${connection.targetHandle || ''}`;
+                        }
 
                         if (customConnection.data == undefined)
                             customConnection.data = {};
@@ -586,14 +705,13 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                         } else {
                             customConnection.type = EdgeType.UNIDIRECTIONAL_EDGE;
 
-                            if (true)  //Changed provenance to always persist connections; monitor for potential side effects.
-                                newConnection(
-                                    (custom_workflow ? custom_workflow : workflowNameRef.current),
-                                    customConnection.source,
-                                    outNodeType as NodeType,
-                                    customConnection.target,
-                                    inNodeType as NodeType
+                            if (provenance !== false) {
+                                TrillGenerator.addNewVersionProvenance(
+                                    reactFlow.getNodes(),
+                                    [...reactFlow.getEdges(), customConnection],
+                                    workflowNameRef.current, "", "Connection added"
                                 );
+                            }
                         }
 
                         return addEdge(customConnection, eds);
@@ -611,6 +729,102 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         },
         [reactFlow.getNodes, reactFlow.getEdges]
     );
+
+    function triggerLevel(levelIndex: number) {
+        const state = playAllStateRef.current;
+        if (!state) return;
+        const levelNodeIds = state.levels[levelIndex];
+        if (!levelNodeIds?.length) { playAllStateRef.current = null; return; }
+        state.pending = new Set(levelNodeIds);
+        state.currentLevel = levelIndex;
+        setNodes((nds: Node[]) =>
+            nds.map((node: Node) =>
+                levelNodeIds.includes(node.id)
+                    ? { ...node, data: { ...node.data, triggerExec: (node.data.triggerExec ?? 0) + 1 } }
+                    : node
+            )
+        );
+    }
+
+    const signalNodeExecDone = useCallback((nodeId: string) => {
+        const state = playAllStateRef.current;
+        if (!state) return;
+        state.pending.delete(nodeId);
+        if (state.pending.size === 0) {
+            const next = state.currentLevel + 1;
+            if (next < state.levels.length) triggerLevel(next);
+            else playAllStateRef.current = null;
+        }
+    }, [setNodes]);
+
+    function playAllNodes() {
+        if (playAllStateRef.current != null) return;
+        const allNodes = reactFlow.getNodes();
+        const allEdges = reactFlow.getEdges();
+        const levels = computeTopologicalLevels(allNodes, allEdges);
+        if (!levels.length) return;
+        const visitedIds = new Set(levels.flat());
+        const cyclic = allNodes.filter(n => !visitedIds.has(n.id));
+        if (cyclic.length > 0) {
+            showToast(`${cyclic.length} node(s) skipped due to cycles in the graph`, "warning");
+        }
+        playAllStateRef.current = { levels, currentLevel: 0, pending: new Set() };
+        triggerLevel(0);
+    }
+
+    function playNodesUpTo(targetNodeId: string) {
+        const currentNodes = reactFlow.getNodes();
+        const currentEdges = reactFlow.getEdges();
+
+        const directedEdges = currentEdges.filter(
+            e => !(e.sourceHandle === "in/out" && e.targetHandle === "in/out")
+        );
+
+        const predecessors = new Map<string, string[]>();
+        for (const n of currentNodes) predecessors.set(n.id, []);
+        for (const e of directedEdges) {
+            predecessors.get(e.target)?.push(e.source);
+        }
+
+        const ancestorIds = new Set<string>();
+        const queue = [targetNodeId];
+        while (queue.length > 0) {
+            const id = queue.shift()!;
+            for (const pred of predecessors.get(id) ?? []) {
+                if (!ancestorIds.has(pred)) {
+                    ancestorIds.add(pred);
+                    queue.push(pred);
+                }
+            }
+        }
+        ancestorIds.add(targetNodeId);
+
+        // Also include degree-0 nodes (no directed edges at all)
+        const directedEdgeNodeIds = new Set<string>();
+        for (const e of directedEdges) {
+            directedEdgeNodeIds.add(e.source);
+            directedEdgeNodeIds.add(e.target);
+        }
+        for (const n of currentNodes) {
+            if (!directedEdgeNodeIds.has(n.id)) ancestorIds.add(n.id);
+        }
+
+        // Skip ancestors that already ran successfully; always keep the target
+        const subgraphNodes = currentNodes.filter(n =>
+            ancestorIds.has(n.id) &&
+            (n.id === targetNodeId || n.data.output?.code !== "success")
+        );
+        const subgraphNodeIds = new Set(subgraphNodes.map(n => n.id));
+        const subgraphEdges = currentEdges.filter(
+            e => subgraphNodeIds.has(e.source) && subgraphNodeIds.has(e.target)
+        );
+
+        const levels = computeTopologicalLevels(subgraphNodes, subgraphEdges);
+        if (!levels.length) return;
+
+        playAllStateRef.current = { levels, currentLevel: 0, pending: new Set() };
+        triggerLevel(0);
+    }
 
     // a box generated a new output. Propagate it to directly connected boxes
     const applyNewOutput = (newOutput: IOutput) => {
@@ -657,6 +871,9 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             if (!added) newOpts.push({ ...newOutput });
             return newOpts;
         });
+
+        markNodeExecutedRef.current(newOutput.nodeId);
+        signalNodeExecDone(newOutput.nodeId);
     };
 
     // responsible for flow of already connected nodes
@@ -801,16 +1018,22 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
     // NEW CODE
 
     // Workflow operations extracted into a dedicated hook
+    // NOTE: markNodeExecutedRef/markNodeStaleRef are updated here so functions defined earlier
+    // (applyNewOutput, onEdgesDelete, onConnect) can access them without stale closures.
     const workflowOps = useWorkflowOperations({
         nodes, edges,
         setNodes, setEdges,
-        setOutputs, setInteractions,
+        setOutputs, outputsRef, setInteractions,
         setDashboardPins, setPositionsInDashboard, setPositionsInWorkflow,
         setWorkflowName,
         workflowNameRef,
         onEdgesDelete, onNodesDelete, onNodesChange,
         onConnect, addNode,
     });
+
+    markNodeExecutedRef.current = workflowOps.markNodeExecuted;
+    markNodeStaleRef.current = workflowOps.markNodeStale;
+    markDirtyRef.current = workflowOps.markDirty;
 
     const nodeActionsValue = useMemo<NodeActionsContextProps>(() => ({
         workflowNameRef,
@@ -863,9 +1086,15 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 updatePositionWorkflow,
                 updatePositionDashboard,
                 applyNewOutput,
+                playAllNodes,
+                playNodesUpTo,
+                signalNodeExecDone,
 
                 // NEW CODE
                 dashboardPins,
+                dashboardOn,
+                dashboardLocked,
+                setDashboardLocked,
                 workflowNameRef,
                 setWorkflowName,
                 loading,

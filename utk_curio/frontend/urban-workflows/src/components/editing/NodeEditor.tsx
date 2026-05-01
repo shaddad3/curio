@@ -29,6 +29,7 @@ import {
 import { OverlayTrigger, Tooltip } from "react-bootstrap";
 import NodeExplanation from "./NodeExplanation";
 import { ICodeData } from "../../types";
+import { useFlowContext } from "../../providers/FlowProvider";
 
 type NodeEditorProps = {
     outputId?: string;
@@ -78,6 +79,8 @@ function NodeEditor({
     const [replacedCodeDirty, setReplacedCodeDirty] = useState<boolean>(false); // code has to rerun every time button is pressed (having changes or not)
     const [fullscreen, setFullscreen] = useState<string>("");
     const [activeTab, setActiveTab] = useState("code");
+    const { dashboardOn } = useFlowContext();
+    const effectiveTab = dashboardOn ? "output" : activeTab;
 
     const contentComponentBypass = useRef(false);
 
@@ -168,7 +171,7 @@ function NodeEditor({
             <div
                 style={{
                     ...{
-                        height: "calc(100% - 30px)",
+                        height: dashboardOn ? "100%" : "calc(100% - 30px)",
                         width: "100%",
                         marginLeft: "auto",
                         marginRight: "auto",
@@ -176,7 +179,7 @@ function NodeEditor({
                     ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
                 }}
             >
-                <Tab.Container activeKey={activeTab} onSelect={handleTabSelect}>
+                <Tab.Container activeKey={effectiveTab} onSelect={handleTabSelect}>
                     <Row style={{ height: "100%" }}>
                         <Col md={12} style={{ height: "100%", padding: 0 }}>
                             <Tab.Content
@@ -271,6 +274,7 @@ function NodeEditor({
                                             data={data}
                                             nodeType={nodeType}
                                             setCode={navigateProv}
+                                            active={activeTab === "provenance"}
                                         />
                                     </Tab.Pane>
                                 ) : null}
@@ -297,7 +301,7 @@ function NodeEditor({
                             </Tab.Content>
                         </Col>
                     </Row>
-                    <Nav
+                    {!dashboardOn && <Nav
                         variant="pills"
                         className="flex-column"
                         style={{
@@ -437,7 +441,7 @@ function NodeEditor({
                                 </Col>
                             ) : null}
                         </Row>
-                    </Nav>
+                    </Nav>}
                 </Tab.Container>
             </div>
         </>

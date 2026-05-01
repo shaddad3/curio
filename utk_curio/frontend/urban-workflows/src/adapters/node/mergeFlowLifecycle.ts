@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useStoreApi, Edge, Position } from 'reactflow';
 import { NodeLifecycleHook, HandleDef } from '../../registry/types';
 import { NodeType } from '../../constants';
@@ -18,12 +18,17 @@ export const useMergeFlowLifecycle: NodeLifecycleHook = (data, _nodeState) => {
     return () => unsubscribe();
   }, [store]);
 
+  const connectedCount = useMemo(
+    () => edges.filter(e => e.target === data.nodeId && e.targetHandle?.startsWith('in_')).length,
+    [edges, data.nodeId]
+  );
+
   useEffect(() => {
     const outArr = inputValues.filter(v => v !== undefined);
-    if (outArr.length > 0) {
+    if (connectedCount > 0 && outArr.length === connectedCount) {
       data.outputCallback(data.nodeId, { data: outArr, dataType: 'outputs' });
     }
-  }, [inputValues, data.nodeId, data.outputCallback]);
+  }, [inputValues, connectedCount, data.nodeId, data.outputCallback]);
 
   useEffect(() => {
     if (Array.isArray(data.input)) {

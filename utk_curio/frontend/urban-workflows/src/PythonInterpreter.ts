@@ -1,5 +1,6 @@
 import { NodeType } from "./constants";
 import { formatDate, mapTypes } from "./utils/formatters";
+import { getToken } from "./utils/authApi";
 // import { pythonCode } from "./pythonWrapper";
 
 export class PythonInterpreter {
@@ -21,6 +22,14 @@ export class PythonInterpreter {
         workflow_name: string,
         nodeExecProv: any
     ) {
+        const callbackError = (message: string) => {
+            callback({
+                stdout: [],
+                stderr: message,
+                output: { path: "", dataType: "str" },
+            });
+        };
+
         let lines = userCode.split("\n");
 
         let unifiedLines = "";
@@ -32,6 +41,7 @@ export class PythonInterpreter {
 
         console.log("unifiedLines", unifiedLines);
 
+        const _token = getToken();
         fetch(process.env.BACKEND_URL + "/processPythonCode", {
             method: "POST",
             body: JSON.stringify({
@@ -42,9 +52,27 @@ export class PythonInterpreter {
             }),
             headers: {
                 "Content-type": "application/json; charset=UTF-8",
+                ...(_token ? { "Authorization": `Bearer ${_token}` } : {}),
             },
         })
-            .then((response) => response.json())
+            .then(async (response) => {
+                let json: any = null;
+                try {
+                    json = await response.json();
+                } catch (error: any) {
+                    throw new Error(
+                        `Backend returned invalid JSON (${response.status}): ${error?.message || String(error)}`
+                    );
+                }
+
+                if (!response.ok) {
+                    throw new Error(
+                        json?.stderr || `Backend execution failed with status ${response.status}`
+                    );
+                }
+
+                return json;
+            })
             .then((json) => {
                 let endTime = formatDate(new Date());
 
@@ -94,6 +122,9 @@ export class PythonInterpreter {
                 // })
 
                 callback(json);
+            })
+            .catch((error: any) => {
+                callbackError(error?.message || String(error));
             });
     }
 }

@@ -4,21 +4,19 @@ Dataflows can be composed of the following nodes:
 
 - DATA_LOADING: used to load or generate data. Process data.
 - DATA_EXPORT: used to save data. Process data.
-- DATA_CLEANING: used to clean data. Process data.
-- DATA_TRANSFORMATION: used to transform data. Process data.
+- DATA_TRANSFORMATION: used to transform or clean data. Process data.
 - COMPUTATION_ANALYSIS: used to generic computations over the data. Process data.
 - VIS_VEGA: used to render vega-lite visualizations. Visualize data.
-- MERGE_FLOW: used to merge one or more flows into a single flow. 
+- MERGE_FLOW: used to merge one or more flows into a single flow.
 
 Nodes are uncontrollable, controllable through python code or controllable through grammar:
 
 - DATA_LOADING: controllable through python code.
 - DATA_EXPORT: controllable through python code.
-- DATA_CLEANING: controllable through python code.
 - DATA_TRANSFORMATION: controllable through python code.
 - COMPUTATION_ANALYSIS: controllable through python code.
 - VIS_VEGA: controllable through grammar.
-- MERGE_FLOW: uncontrollable. 
+- MERGE_FLOW: uncontrollable.
 
 You will receive a description of a dataflow. Your work is to select keywords of the dataflow that denote:
 

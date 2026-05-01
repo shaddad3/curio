@@ -28,7 +28,7 @@ Curio v0.5 introduces a number of improvements and fixes thanks to the efforts o
 - 🐳 **Docker Enhancements:** Fixed Docker build issues by enforcing platform and fixing dependency installation errors.
 - 🧹 **General Bug Fixes:** Resolved issues with icons, route definitions, upload status tracking, and environment variable references.
 
-See the full [Release notes](https://github.com/urban-toolkit/curio/releases) for more. To get started with installation and setup, see the [usage guide](docs/USAGE.md). For a quick hands-on walkthrough, try the [quick start tutorial](docs/QUICK-START.md). If you'd like to contribute, read the [contribution guide](docs/CONTRIBUTIONS.md).
+See the full [Release notes](https://github.com/urban-toolkit/curio/releases) for more. To get started with installation and setup, see the [usage guide](docs/USAGE.md). For a quick hands-on walkthrough, try the [quick start tutorial](docs/QUICK-START.md). If you'd like to contribute, read the [contribution guide](docs/CONTRIBUTING.md).
 
 
 ## Roadmap
@@ -76,7 +76,9 @@ For detailed instructions on how to use the project, please see the [usage](docs
 
 🚀 Curio now supports a Docker-based setup for easier installation and orchestration of all components. See the [usage guide](docs/USAGE.md) for instructions on running Curio with Docker.
 
-If you'd like to contribute, see the [contributions](docs/CONTRIBUTIONS.md) document for guidelines. For questions, join [UTK's Discord](https://discord.gg/ajT6wF8TmN) server.
+🌐 To host a multi-user instance on your own server with HTTPS, see the [deployment guide](docs/DEPLOYMENT.md).
+
+If you'd like to contribute, see the [contributions](docs/CONTRIBUTING.md) document for guidelines. For questions, join [UTK's Discord](https://discord.gg/ajT6wF8TmN) server.
 
 ---
 

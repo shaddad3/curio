@@ -1,12 +1,9 @@
-.aiIconActive {
-  color: rgb(251, 170, 105);
-}
-
 .logo {
   margin-right: 15px;
   margin-left: 15px;
   max-height: 100%;
   width: auto;
+  cursor: pointer;
   /* filter: brightness(0) invert(1); */
 }
 
@@ -18,7 +15,7 @@
   align-items: center;
   background-color: #1E1F23;
   height: 65px;
-  padding: 10px;
+  padding: 10px 20px 10px 10px;
   font-family: Rubik;
   z-index: 100;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -34,6 +31,11 @@
   border: none;
   /* border-bottom: 3px solid #fbfcf6; */
   border-radius: 4px;
+}
+
+/* Must appear after .button so it wins the cascade when both classes are present */
+.aiIconActive {
+  color: #5cb85c;
 }
 
 .dashboardOn {
@@ -79,6 +81,16 @@
   background-color: rgb(251, 170, 105);
 }
 
+.dropDownRowActive {
+  background-color: #2B2C31;
+}
+
+.dropDownDivider {
+  height: 1px;
+  background-color: #2F3036;
+  margin: 0;
+}
+
 .dropDownIcon {
   color: white;
 }
@@ -111,11 +123,32 @@
   padding: 5px;
 }
 
+.subMenu {
+  background-color: #2A2B30;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.subMenuItem {
+  padding: 6px 16px;
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subMenuItem:hover {
+  background-color: rgb(251, 170, 105);
+}
+
 .dropdownWrapper {
   position: relative;
 }
 
-.rightSide { 
+.rightSide {
   display: flex;
   position: absolute;
   right: 90px;
@@ -123,3 +156,27 @@
   z-index: 200;
 }
 
+.saveStatus {
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 8px;
+}
+
+.unsavedIcon {
+  color: rgb(251, 170, 105);
+}
+
+.savedIcon {
+  color: #5cb85c;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.savingPulse {
+  animation: pulse 1s ease-in-out infinite;
+}

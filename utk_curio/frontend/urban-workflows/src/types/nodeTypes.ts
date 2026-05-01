@@ -2,6 +2,7 @@ import { Node } from "reactflow";
 import { AccessLevelType } from "../constants";
 import { IInteraction, IPropagation } from "../providers/FlowProvider";
 import { PythonInterpreter } from "../PythonInterpreter";
+import { JavaScriptInterpreter } from "../JavaScriptInterpreter";
 
 /**
  * Represents the content structure of code data
@@ -10,6 +11,7 @@ export interface ICodeDataContent {
   dataType: string;
   data: any;
   metadata?: any;
+  path?: string;
 }
 
 /**
@@ -26,9 +28,10 @@ export interface ICodeData {
  */
 export interface INodeData {
   nodeId: string;
-  input?: ICodeDataContent;
+  input?: any;
   defaultCode?: string;
   pythonInterpreter?: PythonInterpreter;
+  jsInterpreter?: JavaScriptInterpreter;
   outputCallback?: (nodeId: string, output: string) => void;
   codeChangeCallback?: (nodeId: string, output: string) => void;
   interactionsCallback?: (interactions: any, nodeId: string) => void;
@@ -43,6 +46,7 @@ export interface INodeData {
   nodeType: string;
   customTemplate?: boolean;
   interactions?: IInteraction[];
+  triggerExec?: number;
 }
 
 /**

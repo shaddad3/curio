@@ -12,6 +12,25 @@ module.exports = {
   output: {
     filename: "bundle.js",
     path: path.resolve(__dirname, "dist"),
+    publicPath: process.env.PUBLIC_PATH || "/",
+  },
+  cache: {
+    type: 'filesystem',
+    buildDependencies: {
+      config: [__filename],
+    },
+  },
+  devServer: {
+    historyApiFallback: true,
+    client: {
+      overlay: {
+        // ResizeObserver loop warnings are benign browser notifications fired when
+        // a resize callback cannot deliver all updates in a single animation frame.
+        // Webpack-dev-server incorrectly surfaces them as hard errors via window.onerror.
+        runtimeErrors: (err) =>
+          err?.message !== 'ResizeObserver loop completed with undelivered notifications.',
+      },
+    },
   },
   resolve: {
     extensions: [".tsx", ".ts", ".js"],
@@ -73,6 +92,7 @@ module.exports = {
     }),
     new Dotenv({
       path: ".env",
+      systemvars: true,
     }),
   ],
 };

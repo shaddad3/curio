@@ -107,7 +107,7 @@
       },
       {
         "id": "e2e0b5d8-a0dc-4860-9a08-203871b0d28f",
-        "type": "VIS_IMAGE",
+        "type": "VIS_SIMPLE",
         "x": 3632.8474069287945,
         "y": 531.965690418562,
         "content": "",
@@ -133,7 +133,7 @@
       },
       {
         "id": "71ab6de4-b23c-42d9-a2fe-ce5141d285b2",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 3146.8473822161914,
         "y": 129.9656699772729,
         "content": "import geopandas as gpd\r\n\r\nfiltered_boston = arg\r\n\r\nfiltered_boston = filtered_boston.loc[:, [filtered_boston.geometry.name, 'uncertainty', 'linked']]\r\n\r\nfiltered_boston = filtered_boston.set_crs(4326)\r\nfiltered_boston = filtered_boston.to_crs(3395)\r\n\r\nfiltered_boston.metadata = {\r\n   'name': 'boston'\r\n}\r\n\r\nreturn filtered_boston",

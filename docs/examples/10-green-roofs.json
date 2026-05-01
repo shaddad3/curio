@@ -16,7 +16,7 @@
       },
       {
         "id": "e5e7e21f-609d-496b-b231-659ee91ff9af",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 891.8521428018273,
         "y": 210.48976525940256,
         "content": "import pandas as pd\n\ndf = arg\ndf.fillna(0, inplace=True)\n\nreturn df",

@@ -20,7 +20,7 @@
       },
       {
         "id": "node5",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 166.8794125717717,
         "y": 802,
         "content": "import geopandas as gpd\r\n\r\ngdf_neighborhood = arg\r\n\r\ngdf_neighborhood = gdf_neighborhood.join(pd.json_normalize(gdf_neighborhood[\"avg_attribute_count\"])).drop(columns=[\"avg_attribute_count\"])\r\n\r\ngdf_neighborhood = gdf_neighborhood.dropna(subset=[\"coverage\"])\r\ngdf_neighborhood = gdf_neighborhood.dropna(subset=[\"geometry\"])\r\ngdf_neighborhood = gdf_neighborhood.dropna(subset=[\"neighborhood_name\"])\r\ngdf_neighborhood[\"CurbRamp\"] = gdf_neighborhood[\"CurbRamp\"].fillna(0)\r\ngdf_neighborhood[\"NoCurbRamp\"] = gdf_neighborhood[\"NoCurbRamp\"].fillna(0)\r\ngdf_neighborhood[\"Obstacle\"] = gdf_neighborhood[\"Obstacle\"].fillna(0)\r\ngdf_neighborhood[\"SurfaceProblem\"] = gdf_neighborhood[\"SurfaceProblem\"].fillna(0)\r\n\r\nreturn gdf_neighborhood",

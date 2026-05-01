@@ -83,20 +83,20 @@ describe('nodeRegistry', () => {
   describe('getPaletteNodeTypes', () => {
     test('returns only inPalette descriptors sorted by paletteOrder', () => {
       registerNode(makeDescriptor({
-        id: NodeType.DATA_CLEANING,
+        id: NodeType.DATA_TRANSFORMATION,
         inPalette: true,
         paletteOrder: 99,
         label: 'Z-Last',
       }));
       registerNode(makeDescriptor({
-        id: NodeType.VIS_TEXT,
+        id: NodeType.VIS_SIMPLE,
         inPalette: false,
         label: 'Hidden',
       }));
 
       const palette = getPaletteNodeTypes();
       expect(palette.every((d) => d.inPalette)).toBe(true);
-      expect(palette.find((d) => d.id === NodeType.VIS_TEXT)).toBeUndefined();
+      expect(palette.find((d) => d.id === NodeType.VIS_SIMPLE)).toBeUndefined();
 
       for (let i = 1; i < palette.length; i++) {
         expect((palette[i - 1].paletteOrder ?? 999))

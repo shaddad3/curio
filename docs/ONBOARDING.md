@@ -153,7 +153,7 @@ This **structure is followed across each repository (UTK, Curio, Urbanite) with 
 
 ## 5. Making Contributions
 
-You are encouraged to contribute! Please read our [Contribution Guidelines](https://github.com/urban-toolkit/curio/blob/main/docs/CONTRIBUTIONS.md) before submitting pull requests. Also check [USAGE.md](USAGE.md) for more details on required installations.
+You are encouraged to contribute! Please read our [Contribution Guidelines](https://github.com/urban-toolkit/curio/blob/main/docs/CONTRIBUTING.md) before submitting pull requests. Also check [USAGE.md](USAGE.md) for more details on required installations.
 
 Contributions can include:
 - Fixing bugs
@@ -198,7 +198,7 @@ Use this list to guide your first week of onboarding and to ensure your environm
     - Where to add new scripts or visualization specs
     - How documentation is organized
 - [ ] **Join the Discord channel**.
-- [ ] **Read the CONTRIBUTIONS.md** to understand how to submit contributions.
+- [ ] **Read the CONTRIBUTING.md** to understand how to submit contributions.
 - [ ] **Complete a first small task** (e.g., fixing a typo in documentation or running an existing example).
 
 ## 9. FAQ

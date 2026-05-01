@@ -19,21 +19,17 @@ jest.mock('../../../hook/useUTK', () => ({
   }),
 }));
 
-jest.mock('../../../hook/useTableData', () => ({
-  __esModule: true,
-  default: () => ({
-    createTableData: jest.fn().mockReturnValue([]),
-    parseOutputData: jest.fn().mockReturnValue({ newOutput: '', propagationObj: {} }),
-    customWidgetsCallback: jest.fn(),
-    processDataAsync: jest.fn().mockResolvedValue({ code: '', content: '' }),
-    activeTab: '0',
-    setActiveTab: jest.fn(),
-    tabData: [],
-  }),
-}));
 
 jest.mock('../../../providers/ProvenanceProvider', () => ({
-  useProvenanceContext: () => ({ nodeExecProv: jest.fn() }),
+  useProvenanceContext: () => ({
+    nodeExecProv: jest.fn(),
+    provenanceGraphNodes: {},
+    provenanceGraphNodesRef: { current: {} },
+    selectedParentExecRef: { current: {} },
+    setSelectedExec: jest.fn(),
+    loadNodeProvenance: jest.fn(),
+    getAllNodeProvenance: jest.fn(() => ({})),
+  }),
 }));
 
 jest.mock('../../../providers/FlowProvider', () => ({
@@ -80,9 +76,7 @@ import { useCodeNodeLifecycle } from '../../../adapters/node/codeNodeLifecycle';
 import { useDataExportLifecycle } from '../../../adapters/node/dataExportLifecycle';
 import { useVegaLifecycle } from '../../../adapters/node/vegaLifecycle';
 import { useUtkLifecycle } from '../../../adapters/node/utkLifecycle';
-import { useTableLifecycle } from '../../../adapters/node/tableLifecycle';
-import { useImageLifecycle } from '../../../adapters/node/imageLifecycle';
-import { useTextLifecycle } from '../../../adapters/node/textLifecycle';
+import { useSimpleVisLifecycle } from '../../../adapters/node/simpleVisLifecycle';
 import { useFlowSwitchLifecycle } from '../../../adapters/node/flowSwitchLifecycle';
 import { useMergeFlowLifecycle } from '../../../adapters/node/mergeFlowLifecycle';
 import { useDataPoolLifecycle } from '../../../adapters/node/dataPoolLifecycle';
@@ -202,29 +196,32 @@ describe('Lifecycle hooks — NodeLifecycleHook contract conformance', () => {
     });
   });
 
-  describe('useTableLifecycle', () => {
-    test('returns contentComponent and setSendCodeCallbackOverride', async () => {
-      const result = await callLifecycle(useTableLifecycle);
+  describe('useSimpleVisLifecycle', () => {
+    test('renders table for tabular input', async () => {
+      const result = await callLifecycle(useSimpleVisLifecycle, {
+        input: { dataType: 'dataframe', data: {} } as any,
+      });
       assertValidLifecycleResult(result.current);
       expect(result.current.contentComponent).toBeDefined();
       expect(typeof result.current.setSendCodeCallbackOverride).toBe('function');
     });
-  });
 
-  describe('useImageLifecycle', () => {
-    test('returns contentComponent and setSendCodeCallbackOverride', async () => {
-      const result = await callLifecycle(useImageLifecycle);
+    test('renders image grid for image DataFrame input', async () => {
+      const result = await callLifecycle(useSimpleVisLifecycle, {
+        input: { dataType: 'dataframe', data: { image_id: {}, image_content: {} } } as any,
+      });
       assertValidLifecycleResult(result.current);
       expect(result.current.contentComponent).toBeDefined();
       expect(typeof result.current.setSendCodeCallbackOverride).toBe('function');
     });
-  });
 
-  describe('useTextLifecycle', () => {
-    test('returns empty object (no-op)', async () => {
-      const result = await callLifecycle(useTextLifecycle);
+    test('returns no contentComponent for non-tabular input (text/value mode)', async () => {
+      const result = await callLifecycle(useSimpleVisLifecycle, {
+        input: { dataType: 'value', data: 42 } as any,
+      });
       assertValidLifecycleResult(result.current);
-      expect(Object.keys(result.current)).toHaveLength(0);
+      expect(result.current.contentComponent).toBeUndefined();
+      expect(typeof result.current.setSendCodeCallbackOverride).toBe('function');
     });
   });
 

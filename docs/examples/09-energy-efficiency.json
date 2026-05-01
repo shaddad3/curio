@@ -16,7 +16,7 @@
       },
       {
         "id": "b9d6eeac-790f-46aa-ac25-4d88514a47d8",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 1345.072748967887,
         "y": 738.3612010604521,
         "content": "edf  = arg[['Data Year', 'ID', 'Property Name', 'Address', 'ZIP Code', 'Chicago Energy Rating', 'Community Area', 'Primary Property Type', 'Gross Floor Area - Buildings (sq ft)', 'Year Built', '# of Buildings', 'ENERGY STAR Score', 'Site EUI (kBtu/sq ft)', 'Source EUI (kBtu/sq ft)', 'Weather Normalized Site EUI (kBtu/sq ft)', 'Weather Normalized Source EUI (kBtu/sq ft)', 'Total GHG Emissions (Metric Tons CO2e)', 'GHG Intensity (kg CO2e/sq ft)', 'Latitude', 'Longitude', 'Location']]\n\n# Rename the data columns for consistency and easy use\nedf.columns = ['Year', 'ID', 'Property Name', 'Address', 'ZIP Code', 'Chicago Energy Rating', 'Community Area', 'Primary Property Type', 'Gross Floor Area', 'Year Built', '# of Buildings', 'ENERGY STAR Score', 'Site EUI', 'Source EUI', 'Weather Normalized Site EUI', 'Weather Normalized Source EUI', 'Total GHG Emissions', 'GHG Intensity', 'Latitude', 'Longitude', 'Location']\n\n# Filter out rows with missing data\nedf = edf.dropna()\nedf['ZIP Code'] = edf['ZIP Code'].astype(int)\n\nreturn edf",

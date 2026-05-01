@@ -16,7 +16,7 @@
       },
       {
         "id": "9eafa9de-726a-404b-8c97-d3d5ec94e51d",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 787.6210462891532,
         "y": 285.78809199397796,
         "content": "def remove_outliers(df, column):\n    Q1 = df[column].quantile(0.25)\n    Q3 = df[column].quantile(0.75)\n    IQR = Q3 - Q1\n    return df[(df[column] >= Q1 - 1.5 * IQR) & (df[column] <= Q3 + 1.5 * IQR)]\n\ndef clean(df):\n    # Drop only if columns exist\n    required_cols = ['CENSUS BLOCK', 'BUILDING TYPE', 'BUILDING_SUBTYPE']\n    drop_cols = [col for col in required_cols if col in df.columns]\n\n    df_cleaned = df.dropna(subset=drop_cols).copy()\n\n    # Standard KWH/THERM fill\n    kwh_columns = [col for col in df.columns if 'KWH' in col and '2010' in col and 'SQFT' not in col]\n    therm_columns = [col for col in df.columns if 'THERM' in col and '2010' in col and 'SQFT' not in col]\n    df_cleaned[kwh_columns] = df_cleaned[kwh_columns].fillna(df_cleaned[kwh_columns].median())\n    df_cleaned[therm_columns] = df_cleaned[therm_columns].fillna(df_cleaned[therm_columns].median())\n\n    for col in [\n        'TOTAL KWH', 'TOTAL THERMS',\n        'OCCUPIED UNITS PERCENTAGE', 'OCCUPIED UNITS',\n        'RENTER-OCCUPIED HOUSING UNITS'\n    ]:\n        if col in df_cleaned.columns:\n            df_cleaned[col] = df_cleaned[col].fillna(df_cleaned[col].median())\n\n    df_cleaned['ELECTRICITY ACCOUNTS'] = pd.to_numeric(df_cleaned.get('ELECTRICITY ACCOUNTS'), errors='coerce')\n    df_cleaned['GAS ACCOUNTS'] = pd.to_numeric(df_cleaned.get('GAS ACCOUNTS'), errors='coerce')\n    df_cleaned['ELECTRICITY'] = df_cleaned['TOTAL KWH']\n    df_cleaned['GAS'] = df_cleaned['TOTAL THERMS']\n\n    df_cleaned = df_cleaned.loc[:, df_cleaned.isnull().mean() < 0.2]\n\n    if 'TERM APRIL 2010' in df.columns:\n        df.rename(columns={'TERM APRIL 2010': 'THERM APRIL 2010'}, inplace=True)\n\n    # Standardize community names\n    if 'COMMUNITY AREA NAME' in df_cleaned.columns:\n        df_cleaned['COMMUNITY AREA NAME'] = df_cleaned['COMMUNITY AREA NAME'].str.strip().str.upper()\n        df_cleaned['COMMUNITY AREA NAME'] = df_cleaned['COMMUNITY AREA NAME'].replace({\n            \"LAKEVIEW\": \"LAKE VIEW\",\n            \"O'HARE\": \"OHARE\"\n        })\n\n    # Ensure total columns are present\n    if 'TOTAL KWH' in df_cleaned.columns:\n        df_cleaned['TOTAL KWH'] = df_cleaned['TOTAL KWH'].fillna(df_cleaned['TOTAL KWH'].median())\n    if 'TOTAL THERMS' in df_cleaned.columns:\n        df_cleaned['TOTAL THERMS'] = df_cleaned['TOTAL THERMS'].fillna(df_cleaned['TOTAL THERMS'].median())\n\n    if 'AVERAGE BUILDING AGE' in df_cleaned.columns:\n        df_cleaned['DECADE BUILT'] = (2010 - df_cleaned['AVERAGE BUILDING AGE']) // 10 * 10\n\n    df_cleaned = remove_outliers(df_cleaned, 'TOTAL KWH')\n    df_cleaned = remove_outliers(df_cleaned, 'TOTAL THERMS')\n\n\n\n    return df_cleaned\n\n\n# Run cleaning and return\nreturn clean(arg)",
@@ -107,7 +107,7 @@
       },
       {
         "id": "23a15771-4d9a-479f-911f-b6f758850574",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 934.3905051537082,
         "y": 1285.119141936728,
         "content": "def remove_outliers(df, column):\n    Q1 = df[column].quantile(0.25)\n    Q3 = df[column].quantile(0.75)\n    IQR = Q3 - Q1\n    return df[(df[column] >= Q1 - 1.5 * IQR) & (df[column] <= Q3 + 1.5 * IQR)]\n\ndef clean(df):\n    # We assume column names are already uppercased by the data loading card\n    required_cols = ['COMMUNITY AREA NAME', 'TOTAL KWH', 'TOTAL THERMS', 'BUILDING TYPE']\n    df = df.dropna(subset=required_cols).copy()\n\n    df['COMMUNITY AREA NAME'] = df['COMMUNITY AREA NAME'].str.strip().str.upper()\n    df['TOTAL KWH'] = df['TOTAL KWH'].fillna(df['TOTAL KWH'].median())\n    df['TOTAL THERMS'] = df['TOTAL THERMS'].fillna(df['TOTAL THERMS'].median())\n\n    df = remove_outliers(df, 'TOTAL KWH')\n    df = remove_outliers(df, 'TOTAL THERMS')\n\n    return df\n\nreturn clean(arg)",
@@ -211,7 +211,7 @@
       },
       {
         "id": "42ba84c5-edcf-49b5-ab3b-b5658e018f60",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 3559.362650325905,
         "y": 233.40636117234715,
         "content": "# Filter for KWH month columns\nmonth_cols = [col for col in arg.columns if col.startswith(\"KWH \") and \"2010\" in col]\nrequired_cols = [\"COMMUNITY AREA NAME\"] + month_cols\n\ndf = arg[required_cols].dropna()\n\n# Melt to long format\ndf_long = pd.melt(\n    df,\n    id_vars=[\"COMMUNITY AREA NAME\"],\n    value_vars=month_cols,\n    var_name=\"Month\",\n    value_name=\"KWH\"\n)\n\n# Extract month name (e.g., \"JANUARY\")\ndf_long[\"Month\"] = df_long[\"Month\"].str.extract(r\"KWH (.+?) 2010\")[0].str.upper()\ndf_long = df_long.dropna(subset=[\"Month\", \"KWH\", \"COMMUNITY AREA NAME\"])\n\nreturn df_long",
@@ -263,7 +263,7 @@
       },
       {
         "id": "03b3d67d-9bfd-466d-89c3-a616f6951f7d",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 3547.429497870529,
         "y": 666.1427690438835,
         "content": "df_long = pd.melt(\n    arg,\n    id_vars=[\"COMMUNITY AREA NAME\"],\n    value_vars=[col for col in arg.columns if \"KWH\" in col],\n    var_name=\"Month\",\n    value_name=\"KWH\"\n)\n\ndf_long[\"Month\"] = df_long[\"Month\"].str.extract(r\"KWH (.+?) 2010\")[0].str.upper()\ndf_long = df_long.dropna(subset=[\"Month\", \"KWH\", \"COMMUNITY AREA NAME\"])\n\nreturn df_long",
@@ -315,7 +315,7 @@
       },
       {
         "id": "5c3fa75a-a919-432b-9e95-83e6f1691c8d",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 3641.6793956762835,
         "y": 1238.295981876006,
         "content": "def story_bracket(stories):\n    if stories <= 1:\n        return \"1 story\"\n    elif stories == 2:\n        return \"2 stories\"\n    elif 3 <= stories <= 5:\n        return \"3-5 stories\"\n    elif 6 <= stories <= 10:\n        return \"6-10 stories\"\n    else:\n        return \"11+ stories\"\n\ndef age_bracket(age):\n    if age <= 20:\n        return \"0-20 yrs\"\n    elif age <= 40:\n        return \"21-40 yrs\"\n    elif age <= 60:\n        return \"41-60 yrs\"\n    elif age <= 80:\n        return \"61-80 yrs\"\n    else:\n        return \"81+ yrs\"\n\ndf = arg.copy()\n\ndf[\"STORY BRACKET\"] = df[\"AVERAGE STORIES\"].apply(story_bracket)\ndf[\"AGE BRACKET\"] = df[\"AVERAGE BUILDING AGE\"].apply(age_bracket)\nreturn df",

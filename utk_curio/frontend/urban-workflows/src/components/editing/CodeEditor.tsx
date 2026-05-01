@@ -37,7 +37,7 @@ function CodeEditor({
     const [code, setCode] = useState<string>(""); // code with all original markers
     const [execCount, setExecCount] = useState<number>(0);
 
-    const { workflowNameRef } = useFlowContext();
+    const { workflowNameRef, markNodeExecuted, markNodeStale, signalNodeExecDone } = useFlowContext();
     const { nodeExecProv } = useProvenanceContext();
 
     const replacedCodeDirtyBypass = useRef(false);
@@ -46,6 +46,7 @@ function CodeEditor({
     // @ts-ignore
     const handleCodeChange = (value, event) => {
         setCode(value);
+        markNodeStale(data.nodeId);
     };
 
     useEffect(() => {
@@ -68,53 +69,46 @@ function CodeEditor({
     }, [output.code]);
 
     const processExecutionResult = (result: any) => {
-        let outputContent = "";
-        outputContent += "stdout:\n"+result.stdout.slice(0, 100);
-        outputContent += "\nstderr:\n"+result.stderr;
+        const hasOutput = result.output?.path !== "";
 
-        // outputContent += "\nnode output:\n";
-        // if (outputContent.length > 100) {
-        //     outputContent += result.codeOut.slice(0, 100) + "...";
-        // }
-        // else {
-        //     outputContent += result.codeOut;
-        // }
-
-        outputContent += "\nSaved to file: "+result.output.path;
-
-        setOutputCallback({ code: "success", content: outputContent });
-
-        if (result.stderr == "") {
-            // No error in the execution
+        if (hasOutput) {
+            let outputContent = "stdout:\n" + result.stdout.slice(0, 100);
+            if (result.stderr) outputContent += "\nstderr:\n" + result.stderr;
+            outputContent += "\nSaved to file: " + result.output.path;
+            setOutputCallback({ code: "success", content: outputContent });
             data.outputCallback(data.nodeId, result.output);
+            markNodeExecuted(data.nodeId);
         } else {
             setOutputCallback({ code: "error", content: result.stderr });
+            signalNodeExecDone(data.nodeId);
         }
     };
 
     // marks were resolved and new code is available
     useEffect(() => {
-        if (
-            replacedCode != "" &&
-            replacedCodeDirtyBypass.current &&
-            output.code == "exec"
-        ) {
-            // the code was executing and not only resolving widgets
-            // console.log(data);
-            data.pythonInterpreter.interpretCode(
-                code,
-                replacedCode,
-                data.input,
-                data.inputTypes,
-                processExecutionResult,
-                nodeType,
-                data.nodeId,
-                workflowNameRef.current,
-                nodeExecProv
-            );
+        if (!replacedCodeDirtyBypass.current) {
+            replacedCodeDirtyBypass.current = true;
+            return;
         }
-
-        replacedCodeDirtyBypass.current = true;
+        if (output.code !== "exec") return;
+        if (replacedCode === "") {
+            setOutputCallback({ code: "error", content: "No code to execute" });
+            return;
+        }
+        const interpreter = (nodeType === NodeType.JS_COMPUTATION && data.jsInterpreter)
+            ? data.jsInterpreter
+            : data.pythonInterpreter;
+        interpreter.interpretCode(
+            code,
+            replacedCode,
+            data.input,
+            data.inputTypes,
+            processExecutionResult,
+            nodeType,
+            data.nodeId,
+            workflowNameRef.current,
+            nodeExecProv
+        );
     }, [replacedCodeDirty]);
 
     useEffect(() => {
@@ -160,7 +154,7 @@ function CodeEditor({
             <div style={{ flex: 2, minHeight: 0 }}>
                 <Editor
                     height="100%"
-                    language="python"
+                    language={nodeType === NodeType.JS_COMPUTATION ? "javascript" : "python"}
                     theme="vs"
                     value={code}
                     onChange={handleCodeChange}
@@ -190,6 +184,8 @@ function CodeEditor({
                     fontFamily: "'Source Code Pro', Consolas, 'Courier New', monospace",
                     whiteSpace: "pre-wrap",
                     color: output.code === "error" ? "#c0392b" : "#333",
+                    userSelect: "text",
+                    cursor: "text",
                 }}
             >
                 <span style={{ color: "#303F9F", fontWeight: "bold", marginRight: "6px" }}>{execLabel}</span>

@@ -6,9 +6,10 @@ import React, {
     useRef,
     useEffect
 } from "react";
+import { getToken } from "../utils/authApi";
 
 interface LLMContextProps {
-    openAIRequest: (preamble_file: string, prompt_file: string, text: string, chatId?: string) => any;
+    llmRequest: (preamble_file: string, prompt_file: string, text: string, chatId?: string) => any;
     setCurrentEventPipeline: (eventName: string) => void;
     currentEventPipeline: string;
     AIModeRef: React.MutableRefObject<boolean>;
@@ -16,7 +17,7 @@ interface LLMContextProps {
 }
 
 export const LLMContext = createContext<LLMContextProps>({
-    openAIRequest: () => {},
+    llmRequest: () => {},
     setCurrentEventPipeline: () => {},
     currentEventPipeline: "",
     AIModeRef: { current: false },
@@ -26,7 +27,6 @@ export const LLMContext = createContext<LLMContextProps>({
 const LLMProvider = ({ children }: { children: ReactNode }) => {
 
     const [currentEventPipeline, setCurrentEventPipeline] = useState("");
-    // const [AIMode, setAIMode] = useState<boolean>(false);
 
     const [AIMode, _setAIMode] = useState<boolean>(false);
     const AIModeRef = React.useRef(AIMode);
@@ -35,42 +35,49 @@ const LLMProvider = ({ children }: { children: ReactNode }) => {
         _setAIMode(data);
     };
 
-    const openAIRequest = async (preamble_file: string, prompt_file: string, text: string, chatId?: string) => {
+    const authHeader = (): Record<string, string> => {
+        const token = getToken();
+        return token ? { "Authorization": `Bearer ${token}` } : {};
+    };
+
+    const llmRequest = async (preamble_file: string, prompt_file: string, text: string, chatId?: string) => {
 
         let message: any = {preamble: preamble_file, prompt: prompt_file, text: text};
 
         if(chatId)
             message.chatId = chatId;
 
-        const response_usage = await fetch(`${process.env.BACKEND_URL}/checkUsageOpenAI`, {
+        const response_usage = await fetch(`${process.env.BACKEND_URL}/llm/check`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              ...authHeader(),
             },
             body: JSON.stringify(message),
         });
 
         if (!response_usage.ok) {
-            throw new Error("Failed to submit data.");
+            const body = await response_usage.json().catch(() => ({}));
+            throw new Error(body.description || body.error || "LLM request failed.");
         }
 
         const result_usage = await response_usage.json();
 
-        if(result_usage.result != "yes") // There is no token left, have to wait
-            await new Promise(resolve => setTimeout(resolve, (result_usage.result + 15) * 1000)); // add a 15 seconds margin
+        if(result_usage.result != "yes")
+            await new Promise(resolve => setTimeout(resolve, (result_usage.result + 15) * 1000));
 
-        console.log("message", {...message});
-
-        const response = await fetch(`${process.env.BACKEND_URL}/openAI`, {
+        const response = await fetch(`${process.env.BACKEND_URL}/llm/chat`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              ...authHeader(),
             },
             body: JSON.stringify(message),
         });
-    
+
         if (!response.ok) {
-            throw new Error("Failed to submit data.");
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.description || body.error || "LLM request failed.");
         }
 
         const result = await response.json();
@@ -80,7 +87,7 @@ const LLMProvider = ({ children }: { children: ReactNode }) => {
     return (
         <LLMContext.Provider
             value={{
-                openAIRequest,
+                llmRequest,
                 setCurrentEventPipeline,
                 currentEventPipeline,
                 AIModeRef,

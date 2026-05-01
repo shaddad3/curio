@@ -9,7 +9,7 @@ import "./WorkflowGoal.css";
 
 export default function WorkflowGoal({ }: { }) {
     const { showToast } = useToastContext();
-    const { openAIRequest, setCurrentEventPipeline } = useLLMContext();
+    const { llmRequest, setCurrentEventPipeline } = useLLMContext();
     const { nodes, edges, workflowNameRef, suggestionsLeft, workflowGoal, updateWarnings, updateSubtasks, setWorkflowGoal, eraseWorkflowSuggestions, flagBasedOnKeyword, cleanCanvas, updateKeywords } = useFlowContext();
     const { loadTrill } = useCode();
     const [isEditing, setIsEditing] = useState(false);
@@ -77,7 +77,7 @@ export default function WorkflowGoal({ }: { }) {
     
             try {
     
-                let result = await openAIRequest("default_preamble", "workflow_suggestions_prompt", "Target dataflow: " + JSON.stringify(trill_spec) + "\n" + "The user goal is: "+workflowGoal+" ");
+                let result = await llmRequest("default_preamble", "workflow_suggestions_prompt", "Target dataflow: " + JSON.stringify(trill_spec) + "\n" + "The user goal is: "+workflowGoal+" ");
     
                 console.log("generateSuggestion result", result);
     
@@ -119,7 +119,7 @@ export default function WorkflowGoal({ }: { }) {
         setLoading(true);
 
         try {
-            let result = await openAIRequest("default_preamble", "keywords_binding_prompt", " Current keywords: " + JSON.stringify(current_keywords) + "\n" + "Trill specification: " + JSON.stringify(trill_spec));
+            let result = await llmRequest("default_preamble", "keywords_binding_prompt", " Current keywords: " + JSON.stringify(current_keywords) + "\n" + "Trill specification: " + JSON.stringify(trill_spec));
 
             console.log("getNewHighlightsBinding result", result, workflowGoal);
 
@@ -149,7 +149,7 @@ export default function WorkflowGoal({ }: { }) {
             if(goal == "")
                 return
 
-            let result = await openAIRequest("syntax_analysis_preamble", "syntax_analysis_prompt", goal);
+            let result = await llmRequest("syntax_analysis_preamble", "syntax_analysis_prompt", goal);
 
             console.log("parseKeywords result", result);
 
@@ -202,7 +202,7 @@ export default function WorkflowGoal({ }: { }) {
 
             lastSubtasksNewTaskRef.current = subtasks;
             
-            let result = await openAIRequest("default_preamble", "task_refresh_prompt", "Current Task: " + current_task + "\n" + " Current keywords: " + JSON.stringify(current_keywords) + "\n" + "Trill specification: " + trill_spec_string);
+            let result = await llmRequest("default_preamble", "task_refresh_prompt", "Current Task: " + current_task + "\n" + " Current keywords: " + JSON.stringify(current_keywords) + "\n" + "Trill specification: " + trill_spec_string);
 
             console.log("getNewTask result", result);
 
@@ -240,7 +240,7 @@ export default function WorkflowGoal({ }: { }) {
             if(nodesRef.current.length != 0){
                 let trill_spec = TrillGenerator.generateTrill(nodesRef.current, edgesRef.current, workflowNameRef.current, current_task);
 
-                let result = await openAIRequest("default_preamble", "new_subtasks_prompt", "Current Task: " + current_task + "\n" + "Trill specification: " + JSON.stringify(trill_spec));
+                let result = await llmRequest("default_preamble", "new_subtasks_prompt", "Current Task: " + current_task + "\n" + "Trill specification: " + JSON.stringify(trill_spec));
     
                 console.log("getNewSubtasks", result);
 
@@ -323,7 +323,7 @@ export default function WorkflowGoal({ }: { }) {
 
             lastSubtasksWarningRef.current = subtasks;
 
-            let result_warnings = await openAIRequest("default_preamble", "evaluate_coherence_subtasks_prompt", "Task: " + goal + " \n Current Trill: " + JSON.stringify(trill_spec));
+            let result_warnings = await llmRequest("default_preamble", "evaluate_coherence_subtasks_prompt", "Task: " + goal + " \n Current Trill: " + JSON.stringify(trill_spec));
 
             console.log("warnings result", result_warnings);
 

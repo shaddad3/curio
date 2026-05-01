@@ -22,17 +22,17 @@ def _merge_edge_handle_index(edge_id: str) -> int | None:
 
 GRAMMAR_TYPES = {"VIS_VEGA", "VIS_UTK"}
 CODE_TYPES = {
-    "DATA_LOADING", "DATA_CLEANING", "DATA_TRANSFORMATION",
+    "DATA_LOADING", "DATA_TRANSFORMATION",
     "DATA_EXPORT", "COMPUTATION_ANALYSIS", "CONSTANTS",
-    "FLOW_SWITCH", "VIS_TEXT",
+    "FLOW_SWITCH",
 }
 
 # Subset of CODE_TYPES whose frontend component passes ``code={true}``
 # to ``NodeEditor``, meaning they render a "code" tab with a Monaco editor.
-# The remaining CODE_TYPES (DATA_EXPORT, CONSTANTS, VIS_TEXT) use
+# The remaining CODE_TYPES (DATA_EXPORT, CONSTANTS) use
 # ``code={false}`` and have no code tab.
 CODE_EDITOR_TYPES = {
-    "DATA_LOADING", "DATA_CLEANING", "DATA_TRANSFORMATION",
+    "DATA_LOADING", "DATA_TRANSFORMATION",
     "COMPUTATION_ANALYSIS", "FLOW_SWITCH",
 }
 
@@ -44,7 +44,7 @@ def classify_node(node_type: str) -> str:
         "code"     – has a Monaco code editor and a play button
         "grammar"  – has a JSON / grammar editor and a play button
         "datapool" – has ``#data-tabs`` but NO play button
-        "passive"  – no standard editor and no play button (e.g. MERGE_FLOW, VIS_IMAGE)
+        "passive"  – no standard editor and no play button (e.g. MERGE_FLOW, VIS_SIMPLE)
     """
     if node_type in GRAMMAR_TYPES:
         return "grammar"
@@ -52,7 +52,7 @@ def classify_node(node_type: str) -> str:
         return "datapool"
     if node_type in CODE_TYPES:
         return "code"
-    # MERGE_FLOW, VIS_IMAGE, COMMENTS, or any unknown type
+    # MERGE_FLOW, VIS_SIMPLE, COMMENTS, or any unknown type
     return "passive"
 
 

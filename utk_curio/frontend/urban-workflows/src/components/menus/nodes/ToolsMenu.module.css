@@ -1,8 +1,11 @@
-.containerStyle {
+.wrapperStyle {
     position: fixed;
     z-index: 100;
     top: 150px;
     left: 50px;
+}
+
+.containerStyle {
     background-color: #1E1F23;
     padding: 5px;
     display: grid;
@@ -25,4 +28,28 @@
 .iconStyle {
     font-size: 1.5em;
     color: #fbfcf6;
+}
+
+.playAllButton {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 0;
+    background-color: #1E1F23;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 5px;
+    color: #fbfcf6;
+    font-size: 1.4em;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.playAllButton:hover {
+    background-color: #2c2d32;
+}
+
+.playAllButton:active {
+    background-color: #3a3b40;
 }

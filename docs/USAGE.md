@@ -5,9 +5,14 @@
 - [Installation from git](#installation-from-git)
   - [Installing via Docker](#installing-via-docker)
   - [Installing manually (with `curio.py`)](#installing-manually-with-curiopy)
+- [LLM configuration](#llm-configuration)
+  - [Logged-in users](#logged-in-users)
+  - [Guest users](#guest-users)
 - [Ray tracing](#ray-tracing)
 - [Quick start](#quick-start)
 
+> [!NOTE]
+> This guide covers running Curio locally for development or single-user use. To host a multi-user instance on a server with HTTPS, see the [deployment guide](DEPLOYMENT.md).
 
 ## Installation overview
 
@@ -34,10 +39,22 @@ Usage:
   curio start                       # Start all servers (Backend, Sandbox, Frontend)
   curio start backend               # Start only the backend (localhost:5002)
   curio start sandbox               # Start only the sandbox (localhost:2000)
-  curio start --verbose VERBOSE     # Verbosity level (e.g., 0=silent, 1=normal, 2=debug)
+  curio start frontend              # Start only the frontend (localhost:8080)
+  curio start --auth                # Require login before reaching the project page
+  curio start --no-project          # Skip login and project page; open the canvas directly
+  curio start --deploy              # Same as --auth; use for production deployments
+  curio start --verbose 2           # Verbosity level (0=silent, 1=normal, 2=debug)
   curio start --force-rebuild       # Re-build the frontend and start all servers
   curio start --force-db-init       # Re-initialize the backend database and start all servers
 ```
+
+The three startup modes control which pages are shown when a user first opens Curio:
+
+| Mode | Login page | Project page | Typical use |
+|------|-----------|--------------|-------------|
+| *(default)* | No — auto sign-in as shared guest | Yes | Local single-user development |
+| `--auth` / `--deploy` | Yes | Yes | Multi-user or production deployment |
+| `--no-project` | No — auto sign-in as shared guest | No — opens canvas directly | Demos or embedding Curio in a kiosk |
 
 > [!NOTE]
 > When reading files from inside Curio's dataflow nodes, paths are resolved relative to the directory where you started Curio. If you see a "No such file or directory" error while loading a file, double-check the folder you're running Curio from, because the file path you provide is interpreted relative to that location.
@@ -173,6 +190,65 @@ npm install
 npm run build
 ```
 
+
+## LLM configuration
+
+Curio includes an LLM Assistant sidebar available on the canvas. This feature was originally developed as part of **Urbanite**, a project that has since been migrated into Curio. The assistant lets users ask questions and receive AI-generated guidance in the context of their active dataflow.
+
+To use the LLM Assistant, Curio needs access to an LLM API. Each user can connect their own account, or you can configure a shared key for guest users.
+
+### Logged-in users
+
+Logged-in users configure their own LLM connection from the **Projects page**. Click the **LLM Settings** button in the top navigation bar to open the settings panel.
+
+The following providers are supported:
+
+| Provider | Notes |
+|---|---|
+| **OpenAI** | Uses the standard OpenAI API. Requires an OpenAI API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys). |
+| **Anthropic** | Uses the Anthropic API. Requires an API key from [console.anthropic.com/keys](https://console.anthropic.com/keys). |
+| **Google Gemini** | Uses the Gemini API. Requires an API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| **Custom** | Any OpenAI-compatible endpoint. Covers self-hosted models (Ollama, LM Studio, vLLM), Groq, Azure OpenAI, and others. Provide the base URL of the endpoint; the API key is optional for keyless local servers. |
+
+Settings are stored per user in the database and apply across all of their projects.
+
+### Guest users
+
+Guest users cannot configure their own LLM key. Instead, a shared key is set by via environment variables in a `.env` file at the project root:
+
+```bash
+# Required
+GUEST_LLM_API_KEY=sk-...
+
+# Optional — defaults shown
+GUEST_LLM_API_TYPE=openai_compatible   # openai_compatible | anthropic | gemini
+GUEST_LLM_MODEL=gpt-4o-mini
+GUEST_LLM_BASE_URL=                    # leave blank for the provider default
+```
+
+**Examples:**
+
+OpenAI (default):
+```bash
+GUEST_LLM_API_KEY=sk-proj-abc123...
+```
+
+Local Ollama server (no key required):
+```bash
+GUEST_LLM_API_TYPE=openai_compatible
+GUEST_LLM_BASE_URL=http://localhost:11434/v1
+GUEST_LLM_API_KEY=ollama
+GUEST_LLM_MODEL=llama3.2
+```
+
+Anthropic Claude:
+```bash
+GUEST_LLM_API_TYPE=anthropic
+GUEST_LLM_API_KEY=sk-ant-...
+GUEST_LLM_MODEL=claude-haiku-4-5-20251001
+```
+
+If `GUEST_LLM_API_KEY` is not set, the LLM Assistant will return an error for guest users rather than failing silently.
 
 ## Ray tracing
 

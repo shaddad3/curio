@@ -94,7 +94,7 @@
       },
       {
         "id": "3cc268ee-ec4b-4921-ac69-6d0bb3691cb4",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 2885.7280934075916,
         "y": 116.07879257349236,
         "content": "import geopandas as gpd\n\ngdf = arg\n\nfiltered_gdf = gdf.set_crs(32632)\nfiltered_gdf = filtered_gdf.to_crs(3395)\n\nfiltered_gdf = filtered_gdf[filtered_gdf['mean']>0]\n\nfiltered_gdf.metadata = {\n   'name': 'census'\n}\n\nreturn filtered_gdf",
@@ -107,7 +107,7 @@
       },
       {
         "id": "35bd75ce-005e-40e1-9172-7caef9ccf046",
-        "type": "DATA_CLEANING",
+        "type": "DATA_TRANSFORMATION",
         "x": 4297.41287340717,
         "y": 525.4473148035181,
         "content": "gdf = arg\nreturn gdf.loc[:, [\"gt_65\"]]",

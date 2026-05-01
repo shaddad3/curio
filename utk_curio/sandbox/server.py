@@ -7,9 +7,11 @@ def health():
 
 if __name__ == '__main__':
     app.run(
-        host=os.getenv('FLASK_SANDBOX_HOST', 'localhost'),
+        host=os.getenv('FLASK_SANDBOX_HOST', '127.0.0.1'),
         port=int(os.getenv('FLASK_SANDBOX_PORT', 2000)),
-        threaded=False,
-        debug=True
+        threaded=True,
+        debug=False,
+        use_reloader=True,
+        exclude_patterns=['*.duckdb', '*.duckdb.wal', '*.duckdb-shm', '*.duckdb-wal'],
     )
 

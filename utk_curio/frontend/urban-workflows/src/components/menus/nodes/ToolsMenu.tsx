@@ -1,9 +1,12 @@
 import React, { memo } from "react";
 import { NodeType } from "../../../constants";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faForwardStep } from "@fortawesome/free-solid-svg-icons";
 import { Tooltip, OverlayTrigger } from "react-bootstrap";
 import { getPaletteNodeTypes } from "../../../registry";
+import { useFlowContext } from "../../../providers/FlowProvider";
 import styles from "./ToolsMenu.module.css";
+
 
 const DraggableTool = memo(function DraggableTool({ nodeType, icon, tooltip, tutorialID}: { nodeType: NodeType; icon: any; tooltip: string; tutorialID?: string }) {
     return (
@@ -29,8 +32,9 @@ const DraggableTool = memo(function DraggableTool({ nodeType, icon, tooltip, tut
 
 const ToolsMenu = memo(function ToolsMenu() {
     const paletteTypes = getPaletteNodeTypes();
+    const { playAllNodes } = useFlowContext();
     return (
-        <div>
+        <div className={styles.wrapperStyle}>
             <div className={styles.containerStyle}>
                 {paletteTypes.map(desc => (
                     <DraggableTool
@@ -42,6 +46,13 @@ const ToolsMenu = memo(function ToolsMenu() {
                     />
                 ))}
             </div>
+            <button
+                className={styles.playAllButton}
+                onClick={playAllNodes}
+                title="Run all nodes"
+            >
+                <FontAwesomeIcon icon={faForwardStep} />
+            </button>
         </div>
     );
 });

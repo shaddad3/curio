@@ -1,34 +1,5 @@
-// export async function fetchData(fileName: string, vega: boolean = false) {
-//     try {
-//         // const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}${vega ? '&vega=true' : ''}`;
-//         const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}`;
-//         console.log(`Fetching ${url}`);
-        
-//         const response = await fetch(url, {
-//             headers: {
-//                 'Content-Type': 'application/json',
-//             },
-//         });
-
-//         if (!response.ok) {
-//             throw new Error(`Failed to fetch file ${url}: ${response.statusText}`);
-//         }
-
-//         const jsonData = await response.json();
-
-//         if(vega)
-//             return transformToVega(jsonData);
-
-//         console.log(`Fetched data`, jsonData);
-
-//         return jsonData;
-//     } catch (error: unknown) {
-//         console.error("Error:", error instanceof Error ? error.message : String(error));
-//         throw error;
-//     }
-// }
-
 import { tableFromIPC } from 'apache-arrow';
+import { getToken } from "../utils/authApi";
 
 export async function fetchData(fileName: string, vega: boolean = false) {
     try {
@@ -36,12 +7,17 @@ export async function fetchData(fileName: string, vega: boolean = false) {
         // the backend now streams the raw Arrow IPC format directly.
         const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}`;
         console.log(`Fetching ${url}`);
-        
+        const _token = getToken();
         const response = await fetch(url, {
             headers: {
                 // Change Content-Type (which is for sending data) 
                 // to Accept (which tells the server what we want to receive)
                 'Accept': 'application/vnd.apache.arrow.stream, application/json',
+                // // Not sure what this is. It seems auth tokens for users have been added, but since
+                // // I am streaming arrow bytes this content-type field will not exist and may need to
+                // // be handled somehow else. I'm leaving it commented it out for now
+                // 'Content-Type': 'application/json',
+                // ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
             },
         });
 
@@ -136,10 +112,11 @@ export async function fetchPreviewData(fileName: string) {
         const backendUrl = process.env.BACKEND_URL || 'http://localhost:5002';
         const url = `${backendUrl}/get-preview?fileName=${encodeURIComponent(fileName)}`;
         console.log(`[fetchPreviewData] Fetching preview from ${url}`);
-        
+        const _token = getToken();
         const response = await fetch(url, {
             headers: {
                 'Content-Type': 'application/json',
+                ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
             },
         });
 

@@ -4,6 +4,7 @@ import ReactFlow, {
     Background,
     BackgroundVariant,
     ConnectionMode,
+    Controls,
     Edge,
     EdgeChange,
     NodeChange,
@@ -15,10 +16,7 @@ import { useToastContext } from "../providers/ToastProvider";
 import { NodeType, EdgeType } from "../constants";
 import { getAllNodeTypes } from "../registry";
 import UniversalNode from "./UniversalNode";
-import { UserMenu } from "./login/UserMenu";
 import BiDirectionalEdge from "./edges/BiDirectionalEdge";
-import { RightClickMenu } from "./styles";
-import { useRightClickMenu } from "../hook/useRightClickMenu";
 import { useCode } from "../hook/useCode";
 import { useProvenanceContext } from "../providers/ProvenanceProvider";
 import { buttonStyle } from "./styles";
@@ -33,6 +31,7 @@ import html2canvas from "html2canvas";
 
 import FloatingPanel from "./FloatingPanel";
 import WorkflowGoal from "./menus/top/WorkflowGoal";
+import { DashboardPanel } from "./DashboardPanel";
 
 const CANVAS_EXTENT: [[number, number], [number, number]] = [[-2000, -2000], [6000, 6000]];
 
@@ -48,6 +47,7 @@ export function MainCanvas() {
         isValidConnection,
         onEdgesDelete,
         onNodesDelete,
+        markDirty,
     } = useFlowContext();
 
     const isDraggingRef = useRef(false);
@@ -88,9 +88,8 @@ export function MainCanvas() {
         };
     }, []);
 
-    const { onContextMenu, showMenu, menuPosition } = useRightClickMenu();
     const { createCodeNode } = useCode();
-    const { openAIRequest, AIModeRef, setAIMode } = useLLMContext();
+    const { llmRequest, AIModeRef, setAIMode } = useLLMContext();
 
     const nodeTypes = useMemo(() => {
         const types: Record<string, any> = {};
@@ -108,19 +107,51 @@ export function MainCanvas() {
     }), []);
 
     const reactFlow = useReactFlow();
-    const {getZoom, getViewport, setViewport, setCenter, screenToFlowPosition} = useReactFlow();
+    const {getZoom, getViewport, setViewport, setCenter, screenToFlowPosition, fitView} = useReactFlow();
+
+    // Test hook: expose the ReactFlow instance so Playwright can force a
+    // deterministic viewport (e.g. fitView with duration: 0) before taking
+    // screenshots. Kept unconditional — read-only from the outside and
+    // cheap — so e2e tests don't need a separate build flag.
+    useEffect(() => {
+        (window as any).__curio_reactFlow = reactFlow;
+        return () => {
+            if ((window as any).__curio_reactFlow === reactFlow) {
+                delete (window as any).__curio_reactFlow;
+            }
+        };
+    }, [reactFlow]);
 
     const {
         setDashBoardMode,
         updatePositionWorkflow,
         updatePositionDashboard,
+        updateDataNode,
         workflowNameRef,
-        workflowGoal
+        workflowGoal,
+        dashboardOn,
+        dashboardLocked,
+        dashboardPins,
     } = useFlowContext();
 
     // Refs used inside callbacks so the callbacks don't need to list them as deps
     const selectedEdgeIdRef = useRef<string>("");
     const dashboardOnRef = useRef<boolean>(false);
+    const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+    useEffect(() => { dashboardOnRef.current = dashboardOn; }, [dashboardOn]);
+    useEffect(() => {
+        if (dashboardOn) {
+            savedViewportRef.current = getViewport();
+            const pinnedNodes = Object.keys(dashboardPins)
+                .filter(id => dashboardPins[id])
+                .map(id => ({ id }));
+            setTimeout(() => fitView({ duration: 300, padding: 0.08, nodes: pinnedNodes }), 50);
+        } else {
+            if (savedViewportRef.current) {
+                setViewport(savedViewportRef.current, { duration: 300 });
+            }
+        }
+    }, [dashboardOn]);
 
     const [isComponentsSelected, setIsComponentsSelected] = useState<boolean>(false);
 
@@ -128,9 +159,6 @@ export function MainCanvas() {
 
     // Selecting boxes to generate explanation
     const [selectedComponents, setSelectedComponents] = useState<any>({});
-
-    const [dashboardOn, setDashboardOn] = useState<boolean>(false);
-    const { dashboardPins } = useFlowContext();
 
     const captureScreenshot = async (): Promise<string | null> => {
         const screenshotTarget = document.getElementsByClassName("react-flow__renderer")[0] as HTMLElement;
@@ -160,7 +188,7 @@ export function MainCanvas() {
 
         let text = JSON.stringify(trill_spec)
 
-        openAIRequest("default_preamble", "explanation_prompt", text).then((response: any) => {
+        llmRequest("default_preamble", "explanation_prompt", text).then((response: any) => {
             console.log("Response:", response);
 
             setFloatingPanels((prev: any) => {
@@ -189,7 +217,7 @@ export function MainCanvas() {
 
         let text = JSON.stringify(trill_spec) + "\n\n" + ""
 
-        openAIRequest("default_preamble", "debug_prompt", text).then((response: any) => {
+        llmRequest("default_preamble", "debug_prompt", text).then((response: any) => {
             console.log("Response:", response);
 
             setFloatingPanels((prev: any) => {
@@ -223,7 +251,6 @@ export function MainCanvas() {
     // Apply dashboard mode changes
     const handleDashboardToggle = useCallback((value: boolean) => {
         dashboardOnRef.current = value;
-        setDashboardOn(value);
         setDashBoardMode(value);
     }, [setDashBoardMode]);
 
@@ -238,11 +265,13 @@ export function MainCanvas() {
         if (!type) return;
         const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
         createCodeNode(type, { position });
-    }, [screenToFlowPosition, createCodeNode]);
+        markDirty();
+    }, [screenToFlowPosition, createCodeNode, markDirty]);
 
     const handleNodesChange = useCallback((changes: NodeChange[]) => {
         const allowedChanges: NodeChange[] = [];
         const currentEdges = reactFlow.getEdges();
+        let dirty = false;
 
         for (const change of changes) {
             let allowed = true;
@@ -258,6 +287,7 @@ export function MainCanvas() {
                         break;
                     }
                 }
+                if (allowed) dirty = true;
             }
 
             if (
@@ -265,18 +295,26 @@ export function MainCanvas() {
                 change.position != undefined &&
                 change.position.x != undefined
             ) {
-                if (dashboardOnRef.current)
+                if (dashboardOnRef.current) {
                     updatePositionDashboard(change.id, change);
-                else
+                } else {
                     updatePositionWorkflow(change.id, change);
+                }
+                dirty = true;
             }
 
             if (allowed) allowedChanges.push(change);
         }
 
+        if (dirty) markDirty();
         onNodesDelete(allowedChanges);
         return onNodesChange(allowedChanges);
-    }, [reactFlow, showToast, updatePositionDashboard, updatePositionWorkflow, onNodesDelete, onNodesChange]);
+    }, [reactFlow, showToast, updatePositionDashboard, updatePositionWorkflow, onNodesDelete, onNodesChange, markDirty]);
+
+    const handleNodeDragStop = useCallback((_event: React.MouseEvent, node: any) => {
+        if (!dashboardOnRef.current) return;
+        updateDataNode(node.id, { ...node.data, dashboardX: node.position.x, dashboardY: node.position.y });
+    }, [updateDataNode]);
 
     const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
         let selected = "";
@@ -292,24 +330,28 @@ export function MainCanvas() {
             }
         }
 
+        let dirty = false;
         for (const change of changes) {
             if (
                 change.type === "remove" &&
                 (selected === change.id || prevSelectedId === change.id)
             ) {
                 allowedChanges.push(change);
+                dirty = true;
             } else if (change.type !== "remove") {
                 allowedChanges.push(change);
             }
         }
 
+        if (dirty) markDirty();
         return onEdgesChange(allowedChanges);
-    }, [onEdgesChange]);
+    }, [onEdgesChange, markDirty]);
 
     const handleEdgesDelete = useCallback((edges: Edge[]) => {
         const allowedEdges = edges.filter(edge => selectedEdgeIdRef.current === edge.id);
+        if (allowedEdges.length > 0) markDirty();
         return onEdgesDelete(allowedEdges);
-    }, [onEdgesDelete]);
+    }, [onEdgesDelete, markDirty]);
 
     const handleSelectionChange = useCallback((selection: { nodes: any[]; edges: any[] }) => {
         setSelectedComponents(selection);
@@ -333,12 +375,6 @@ export function MainCanvas() {
 
     //     setViewport({ x: newX, y: newY, zoom: nextZoom }, { duration: 200 });
     // };
-
-    // Filter nodes based on dashboard mode
-    const filteredNodes = useMemo(() => {
-        if (!dashboardOn) return nodes;
-        return nodes.filter(node => dashboardPins[node.id]);
-    }, [nodes, dashboardOn, dashboardPins]);
 
 
     const loadingAnimation = () => {
@@ -379,8 +415,7 @@ export function MainCanvas() {
     return (
         <>
         {!loading ? <div
-            style={{ width: "100vw", height: "100vh", backgroundColor: "#f0f0f0" }}
-            onContextMenu={onContextMenu}
+            style={{ width: "100vw", height: "100vh", backgroundColor: dashboardOn ? "#ffffff" : "#f0f0f0" }}
             // onWheelCapture={handleWheel}
         >
             {Object.keys(floatingPanels).map((key, index) => (
@@ -392,45 +427,45 @@ export function MainCanvas() {
                     onClose={() => {deleteFloatingPanel(key)}}
                 />
             ))}
-            <UserMenu />
-            <ToolsMenu />
-            <UpMenu
+            {!dashboardOn && <ToolsMenu />}
+            {!dashboardOn && <UpMenu
                 setDashBoardMode={(value) => handleDashboardToggle(value)}
                 setDashboardOn={handleDashboardToggle}
                 dashboardOn={dashboardOn}
                 setAIMode={setAIMode}
-            />
-            <RightClickMenu
-                showMenu={showMenu}
-                menuPosition={menuPosition}
-                options={[
-                    {
-                        name: "Add comment box",
-                        action: () => createCodeNode("COMMENTS"),
-                    },
-                ]}
-            />
+            />}
+
+            {dashboardOn && <DashboardPanel />}
             <ReactFlow
-                // zoomOnScroll={false}
-                nodes={filteredNodes}
+                nodes={nodes}
                 edges={edges}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
+                onDragOver={!dashboardOn ? handleDragOver : undefined}
+                onDrop={!dashboardOn ? handleDrop : undefined}
                 onNodesChange={handleNodesChange}
+                onNodeDragStop={handleNodeDragStop}
                 onEdgesChange={handleEdgesChange}
                 onEdgesDelete={handleEdgesDelete}
-                selectionKeyCode="Shift"
+                selectionKeyCode={dashboardOn ? null : "Shift"}
                 onSelectionChange={handleSelectionChange}
-                onConnect={onConnect}
+                onConnect={!dashboardOn ? onConnect : undefined}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 isValidConnection={isValidConnection}
                 connectionMode={ConnectionMode.Loose}
                 minZoom={0.05}
-                onlyRenderVisibleElements
+
                 translateExtent={CANVAS_EXTENT}
+                panOnDrag={!dashboardOn || !dashboardLocked}
+                zoomOnScroll={!dashboardOn || !dashboardLocked}
+                zoomOnPinch={!dashboardOn || !dashboardLocked}
+                zoomOnDoubleClick={!dashboardOn || !dashboardLocked}
+                nodesDraggable={!dashboardOn || !dashboardLocked}
+                elementsSelectable={true}
+                nodesConnectable={!dashboardOn}
+                style={dashboardOn ? { backgroundColor: "#ffffff" } : undefined}
             >
-                <Background color="#a0a0a0" variant={BackgroundVariant.Dots} gap={20} size={2} />
+                {!dashboardOn && <Background color="#a0a0a0" variant={BackgroundVariant.Dots} gap={20} size={2} />}
+                {!dashboardOn && <Controls />}
                 {AIModeRef.current ? <WorkflowGoal /> : null}
                 {AIModeRef.current ? <LLMChat /> : null}
             </ReactFlow>
@@ -475,8 +510,8 @@ export function MainCanvas() {
             ) : null}
             <input hidden type="file" name="file" id="file" />
 
-        </div> : loadingAnimation() }     
+        </div> : loadingAnimation() }
         </>
-        
+
     );
 }

@@ -24,7 +24,15 @@ jest.mock('../../hook/useTableData', () => ({
 }));
 
 jest.mock('../../providers/ProvenanceProvider', () => ({
-  useProvenanceContext: () => ({ nodeExecProv: jest.fn() }),
+  useProvenanceContext: () => ({
+    nodeExecProv: jest.fn(),
+    provenanceGraphNodes: {},
+    provenanceGraphNodesRef: { current: {} },
+    selectedParentExecRef: { current: {} },
+    setSelectedExec: jest.fn(),
+    loadNodeProvenance: jest.fn(),
+    getAllNodeProvenance: jest.fn(() => ({})),
+  }),
 }));
 
 jest.mock('../../providers/FlowProvider', () => ({
@@ -112,5 +120,15 @@ describe('Registered descriptors', () => {
     for (const desc of descriptors) {
       expect(desc.adapter.handles.length).toBeGreaterThan(0);
     }
+  });
+
+  test('JS_COMPUTATION descriptor has expected properties', () => {
+    const desc = getNodeDescriptor(NodeType.JS_COMPUTATION);
+    expect(desc.id).toBe(NodeType.JS_COMPUTATION);
+    expect(desc.label).toBe('JS Computation');
+    expect(desc.category).toBe('computation');
+    expect(desc.adapter.editor.code).toBe(true);
+    expect(desc.adapter.editor.widgets).toBe(true);
+    expect(desc.inPalette).toBe(true);
   });
 });

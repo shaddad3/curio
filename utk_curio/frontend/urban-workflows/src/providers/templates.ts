@@ -39,7 +39,7 @@ export default async function useTemplates() {
 //     },
 //     {
 //         id: uuid(),
-//         type: NodeType.DATA_CLEANING,
+//         type: NodeType.DATA_TRANSFORMATION,
 //         name: "Clean Observation Points",
 //         description: "",
 //         accessLevel: AccessLevelType.ANY,
@@ -66,7 +66,7 @@ export default async function useTemplates() {
 //     },
 //     {
 //         id: uuid(),
-//         type: NodeType.DATA_CLEANING,
+//         type: NodeType.DATA_TRANSFORMATION,
 //         name: "Clean Neighborhood Data",
 //         description: "",
 //         accessLevel: AccessLevelType.ANY,
@@ -111,7 +111,7 @@ export default async function useTemplates() {
 //     },
 //     {
 //         id: uuid(),
-//         type: NodeType.DATA_CLEANING,
+//         type: NodeType.DATA_TRANSFORMATION,
 //         name: "Clean Street Data",
 //         description: "",
 //         accessLevel: AccessLevelType.ANY,

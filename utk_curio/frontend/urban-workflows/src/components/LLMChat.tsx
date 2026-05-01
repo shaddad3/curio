@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useLLMContext } from "../providers/LLMProvider";
+import { getToken } from "../utils/authApi";
 import { useFlowContext } from "../providers/FlowProvider";
 import CSS from "csstype";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -12,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import "./LLMChat.css";
 
 const ChatComponent = () => {
-    const { openAIRequest, setCurrentEventPipeline } = useLLMContext();
+    const { llmRequest, setCurrentEventPipeline } = useLLMContext();
     const { setWorkflowGoal, cleanCanvas } = useFlowContext();
     const [messages, setMessages] = useState<{ role: string; text: string }[]>([]);
     const [input, setInput] = useState("");
@@ -29,7 +30,7 @@ const ChatComponent = () => {
 
         try {
 
-            const response = await openAIRequest("default_preamble", "chat_prompt", input, "ChatComponent");
+            const response = await llmRequest("default_preamble", "chat_prompt", input, "ChatComponent");
             const aiMessage = { role: "ai", text: response.result };
             setMessages((prev) => [...prev, aiMessage]);
         } catch (error) {
@@ -58,9 +59,10 @@ const ChatComponent = () => {
     const cleanOpenAIChat = () => {
         setLoading(false);
         setMessages([]);
-            
-        fetch(process.env.BACKEND_URL+"/cleanOpenAIChat?chatId=ChatComponent", {
-            method: "GET"
+        const token = getToken();
+        fetch(process.env.BACKEND_URL+"/llm/clean?chatId=ChatComponent", {
+            method: "GET",
+            headers: token ? { "Authorization": `Bearer ${token}` } : {},
         });
     }
 

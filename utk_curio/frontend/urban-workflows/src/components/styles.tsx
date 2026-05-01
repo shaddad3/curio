@@ -2,11 +2,10 @@ import React, { ReactNode, useState, useEffect } from "react";
 import CSS from "csstype";
 import { Dropdown, Spinner } from "react-bootstrap";
 
-import { useNodeActionsContext } from "../providers/FlowProvider";
+import { useFlowContext } from "../providers/FlowProvider";
 import { NodeRemoveChange, useReactFlow } from "reactflow";
 
 import { CommentsList, IComment } from "./comments/CommentsList";
-import { useRightClickMenu } from "../hook/useRightClickMenu";
 
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -105,23 +104,30 @@ export const NodeContainer = ({
 }) => {
     const { showToast } = useToastContext();
     const {
+        nodes,
+        edges,
         workflowNameRef,
         applyRemoveChanges,
         setPinForDashboard,
+        dashboardPins,
         allMinimized,
         setExpandStatus,
         updateDataNode,
         updateDefaultCode,
         workflowGoal,
-        acceptSuggestion
-    } = useNodeActionsContext();
+        acceptSuggestion,
+        nodeExecStatus,
+        playNodesUpTo,
+        dashboardOn,
+        dashboardLocked,
+    } = useFlowContext();
     const { getNodes, getEdges } = useReactFlow();
     const { getTemplates, deleteTemplate, fetchTemplates } = useTemplateContext();
     const { createCodeNode, loadTrill } = useCode();
     const [showComments, setShowComments] = useState(false);
     const [comments, setComments] = useState<IComment[]>([]);
     const [goal, setGoal] = useState(data.goal);
-    const [pinnedToDashboard, setPinnedToDashboard] = useState<boolean>(false);
+    const [pinnedToDashboard, setPinnedToDashboard] = useState<boolean>(!!dashboardPins[nodeId]);
     const [expectedInputType, setExpectedInputType] = useState(data.in);
     const [expectedOutputType, setExpectedOutputType] = useState(data.out);
     const [isConnectionLeftOpen, setIsConnectionLeftOpen] = useState(false);
@@ -134,15 +140,26 @@ export const NodeContainer = ({
     const [currentNodeHeight, setCurrentNodeHeight] = useState<
         number | undefined
     >(nodeHeight);
-    const { showMenu, menuPosition, onContextMenu } = useRightClickMenu();
     const [minimized, setMinimized] = useState(
         data.nodeType == NodeType.MERGE_FLOW
     );
-    const { openAIRequest, setCurrentEventPipeline, AIModeRef } = useLLMContext();
+    const { llmRequest, setCurrentEventPipeline, AIModeRef } = useLLMContext();
 
     useEffect(() => {
         setGoal(data.goal);
     }, [data.goal])
+
+    useEffect(() => {
+        if (nodeWidth !== undefined) {
+            setCurrentNodeWidth(nodeWidth);
+        }
+    }, [nodeWidth]);
+
+    useEffect(() => {
+        if (nodeHeight !== undefined) {
+            setCurrentNodeHeight(nodeHeight);
+        }
+    }, [nodeHeight]);
 
     useEffect(() => {
 
@@ -221,13 +238,17 @@ export const NodeContainer = ({
         if (nodeHeight == undefined) {
             setCurrentNodeHeight(350);
         }
+    }, []);
 
+    useEffect(() => {
         const resizer = document.getElementById(
             nodeId + "resizer"
         ) as HTMLElement;
         const resizable = document.getElementById(
             nodeId + "resizable"
         ) as HTMLElement;
+
+        if (!resizer || !resizable) return;
 
         let startX = 0;
         let startY = 0;
@@ -237,12 +258,37 @@ export const NodeContainer = ({
         function resize(e: any) {
             const newWidth = startWidth + (e.clientX - startX);
             const newHeight = startHeight + (e.clientY - startY);
-    
+
             resizable.style.width = newWidth + "px";
             resizable.style.height = newHeight + "px";
-    
+
             setCurrentNodeWidth(newWidth);
             setCurrentNodeHeight(newHeight);
+        }
+
+        function stopResize(e: any) {
+            window.removeEventListener("mousemove", resize, false);
+            window.removeEventListener("mouseup", stopResize, false);
+
+            const newWidth = resizable.offsetWidth;
+            const newHeight = resizable.offsetHeight;
+            if (dashboardOn) {
+                if (data.dashboardWidth !== newWidth || data.dashboardHeight !== newHeight) {
+                    updateDataNode(nodeId, {
+                        ...data,
+                        dashboardWidth: newWidth,
+                        dashboardHeight: newHeight,
+                    });
+                }
+            } else {
+                if (data.nodeWidth !== newWidth || data.nodeHeight !== newHeight) {
+                    updateDataNode(nodeId, {
+                        ...data,
+                        nodeWidth: newWidth,
+                        nodeHeight: newHeight,
+                    });
+                }
+            }
         }
 
         function initResize(e: any) {
@@ -257,11 +303,10 @@ export const NodeContainer = ({
 
         resizer.addEventListener("mousedown", initResize, false);
 
-        function stopResize(e: any) {
-            window.removeEventListener("mousemove", resize, false);
-            window.removeEventListener("mouseup", stopResize, false);
-        }
-    }, []);
+        return () => {
+            resizer.removeEventListener("mousedown", initResize, false);
+        };
+    }, [dashboardOn, dashboardLocked]);
 
     const updateDataGoal = (goal: string) => {
         if(data.goal != goal){
@@ -276,7 +321,7 @@ export const NodeContainer = ({
 
     const generateSubtaskFromExec = async (node_content: string, node_type: NodeType, current_task: string) => {
         try {
-            let result = await openAIRequest("default_preamble", "new_subtask_from_exec_prompt", " Node content: " + node_content + "\n" + "Node type: " + node_type + " Task: " + current_task);
+            let result = await llmRequest("default_preamble", "new_subtask_from_exec_prompt", " Node content: " + node_content + "\n" + "Node type: " + node_type + " Task: " + current_task);
             
             console.log("generateSubtaskFromExec result", result);
 
@@ -324,15 +369,9 @@ export const NodeContainer = ({
         setComments([...comments, comment]);
     };
 
-    const options = disableComments
-        ? [{ name: "Delete", action: onDelete }]
-        : [
-              { name: "Delete", action: onDelete },
-              {
-                  name: showComments ? "Hide Comments" : "Show Comments",
-                  action: () => setShowComments(!showComments),
-              },
-          ];
+    useEffect(() => {
+        setPinnedToDashboard(!!dashboardPins[nodeId]);
+    }, [dashboardPins[nodeId]]);
 
     const updatePin = (nodeId: string, value: boolean) => {
         setPinnedToDashboard(!value);
@@ -353,7 +392,7 @@ export const NodeContainer = ({
 
         try {
     
-            let result = await openAIRequest("default_preamble", "new_connection_prompt", "Dataflow task: " + workflowGoal + "\n nodeId: " + nodeId + "\n Subtask: " + goal + "\n Your suggested nodes will be connected to the: " + inOrOut + "\n Current Trill: " + JSON.stringify(trill_spec));
+            let result = await llmRequest("default_preamble", "new_connection_prompt", "Dataflow task: " + workflowGoal + "\n nodeId: " + nodeId + "\n Subtask: " + goal + "\n Your suggested nodes will be connected to the: " + inOrOut + "\n Current Trill: " + JSON.stringify(trill_spec));
 
             let clean_result = result.result.replaceAll("```json", "").replaceAll("```python", "");
             clean_result = clean_result.replaceAll("```", "");
@@ -405,7 +444,7 @@ export const NodeContainer = ({
                     }
                 }
 
-                let result = await openAIRequest("default_preamble", "new_content_prompt", "Current Trill: " + JSON.stringify(trill_spec) + "\n" + " Node ID: " + nodeId + "\n" + "Subtask: "+goal+" Task: " + "\n" + workflowGoal);
+                let result = await llmRequest("default_preamble", "new_content_prompt", "Current Trill: " + JSON.stringify(trill_spec) + "\n" + " Node ID: " + nodeId + "\n" + "Subtask: "+goal+" Task: " + "\n" + workflowGoal);
     
                 let clean_result = result.result.replaceAll("```json", "").replaceAll("```python", "");
                 clean_result = clean_result.replaceAll("```", "");
@@ -557,13 +596,13 @@ export const NodeContainer = ({
                 }} /> : null
             }
 
-            <div
+            {(!dashboardOn || !dashboardLocked) && <div
                 id={nodeId + "resizer"}
                 className={"resizer nowheel nodrag"}
                 style={{
                     ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {pointerEvents: "none"} : {})
                 }}
-            ></div>
+            ></div>}
             <div
                 id={nodeId + "resizable"}
                 className={"resizable"}
@@ -573,13 +612,13 @@ export const NodeContainer = ({
                     width: currentNodeWidth + "px",
                     height: currentNodeHeight + "px",
                     ...(minimized ? { display: "none" } : {}),
-                    ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {opacity: 0.5, borderWidth: "2px", borderStyle: "dashed", pointerEvents: "none"} : {}), 
-                    ...(data.suggestionAcceptable ? {borderColor: "#1d3853"} : {}), 
-                    ...(data.keywordHighlighted ? {backgroundColor: "#1E1F23"} : {})
+                    ...((data.suggestionType != "none" && data.suggestionType != undefined) ? {opacity: 0.5, borderWidth: "2px", borderStyle: "dashed", pointerEvents: "none"} : {}),
+                    ...(data.suggestionAcceptable ? {borderColor: "#1d3853"} : {}),
+                    ...(data.keywordHighlighted ? {backgroundColor: "#1E1F23"} : {}),
+                    ...(dashboardOn ? {border: "2px solid #000", boxShadow: "none", borderRadius: "0", resize: "none"} : {})
                 }}
-                onContextMenu={onContextMenu}
             >
-                {!noContent ? (
+                {!noContent && !dashboardOn ? (
                     <div style={{
                         display: "flex",
                         alignItems: "center",
@@ -613,6 +652,18 @@ export const NodeContainer = ({
                             minWidth: 0,
                             color: data.keywordHighlighted ? "rgb(251, 252, 246)" : "#888787",
                         }}>
+                            {nodeExecStatus[nodeId] === "executed" ? (
+                                <span
+                                    style={{
+                                        color: "#2F8F4A",
+                                        marginRight: "4px",
+                                        fontSize: "10px",
+                                    }}
+                                    title="Executed"
+                                >
+                                    &#10003;
+                                </span>
+                            ) : null}
                             {nodeNameTranslation(data.nodeType)}
                             {templateData.name != undefined ? " · " + templateData.name : null}
                         </span>
@@ -658,11 +709,11 @@ export const NodeContainer = ({
                     </div>
                 ) : null}
 
-                <div style={{height: "calc(100% - 35px)", width: "calc(100% - 30px)", marginLeft: "auto", marginRight: "auto"}}>
+                <div style={{height: dashboardOn ? "100%" : "calc(100% - 35px)", width: "calc(100% - 30px)", marginLeft: "auto", marginRight: "auto"}}>
                     {children}
                 </div>
 
-                <Row
+                {!dashboardOn && <Row
                     style={{
                         ...{
                             width: "25%",
@@ -698,11 +749,7 @@ export const NodeContainer = ({
                                                 color: "rgb(251, 170, 105)",
                                             }}
                                             onClick={() => {
-                                                setOutputCallback({
-                                                    code: "exec",
-                                                    content: "",
-                                                });
-                                                sendCodeToWidgets(code); // will resolve markers
+                                                playNodesUpTo(data.nodeId);
                                                 if(AIModeRef.current)
                                                     generateSubtaskFromExec((code ? code : ""), data.nodeType, workflowGoal);
                                             }}
@@ -919,16 +966,8 @@ export const NodeContainer = ({
                             {/* </Col> */}
                         </Row>
                     ) : null}
-                </Row>
+                </Row>}
 
-                {
-                    !(data.suggestionType != "none" && data.suggestionType != undefined) ?
-                    <RightClickMenu
-                        menuPosition={menuPosition}
-                        showMenu={showMenu}
-                        options={options}
-                    /> : null
-                }
             </div>
 
             {showComments && (
@@ -1018,7 +1057,6 @@ const headerIconStyle: CSS.Properties = {
 const nodeTypeBorderColor: Record<string, string> = {
     [NodeType.DATA_LOADING]: "#3498db",
     [NodeType.DATA_EXPORT]: "#3498db",
-    [NodeType.DATA_CLEANING]: "#3498db",
     [NodeType.DATA_TRANSFORMATION]: "#3498db",
     [NodeType.DATA_SUMMARY]: "#3498db",
     [NodeType.COMPUTATION_ANALYSIS]: "#8e44ad",
@@ -1028,9 +1066,7 @@ const nodeTypeBorderColor: Record<string, string> = {
     [NodeType.CONSTANTS]: "#8e44ad",
     [NodeType.VIS_UTK]: "#1abc9c",
     [NodeType.VIS_VEGA]: "#1abc9c",
-    [NodeType.VIS_TABLE]: "#1abc9c",
-    [NodeType.VIS_TEXT]: "#1abc9c",
-    [NodeType.VIS_IMAGE]: "#1abc9c",
+    [NodeType.VIS_SIMPLE]: "#1abc9c",
     [NodeType.COMMENTS]: "#95a5a6",
 };
 
@@ -1042,35 +1078,6 @@ const getNodeContainerStyles = (nodeType: string): CSS.Properties => ({
     padding: "5px",
     boxShadow: "rgba(0, 0, 0, 0.35) 0px 5px 15px",
 });
-
-export const RightClickMenu = ({
-    showMenu,
-    menuPosition,
-    options,
-}: {
-    showMenu: boolean;
-    menuPosition: { y: number; x: number };
-    options: { name: string; action: () => void }[];
-}) => {
-    return (
-        <Dropdown show={showMenu} drop="end">
-            <Dropdown.Menu
-                style={{
-                    position: "fixed",
-                    top: menuPosition.y,
-                    left: menuPosition.x,
-                    transform: "translate(0, 0)",
-                }}
-            >
-                {options.map((option) => (
-                    <Dropdown.Item key={option.name} onClick={option.action}>
-                        {option.name}
-                    </Dropdown.Item>
-                ))}
-            </Dropdown.Menu>
-        </Dropdown>
-    );
-};
 
 const nodeContentStyle: CSS.Properties = {
     backgroundColor: "white",
