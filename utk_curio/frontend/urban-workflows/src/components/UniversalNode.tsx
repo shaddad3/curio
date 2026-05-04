@@ -47,7 +47,8 @@ const UniversalNode = React.memo(function UniversalNode({ data, isConnectable }:
 
   useEffect(() => {
     outputCodeRef.current = output?.code;
-    if (output?.code === "error") {
+    // Add "success" to the condition so the pipeline knows the node finished
+    if (output?.code === "error" || output?.code === "success") {
       signalNodeExecDone(data.nodeId);
     }
   }, [output?.code]);

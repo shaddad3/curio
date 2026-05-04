@@ -232,8 +232,14 @@ def get_file():
         )
         resp.raise_for_status()
         data = resp.json()
+        # if vega:
+        #     data = transform_to_vega(data)
         if vega:
             data = transform_to_vega(data)
+            arrow_table = pa.Table.from_pylist(data)
+        else:
+            # Extract the columnar data payload directly
+            arrow_table = pa.Table.from_pydict(data.get("data", {}))
         print(f"[/get] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
 
         # Stream the Arrow byte-stream to frontend instead of JSON!
@@ -277,8 +283,8 @@ def get_file_preview():
         data = resp.json()
         print(f"[/get-preview] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
         
-        # Stream the Arrow byte-stream to frontend instead of JSON!
-        arrow_table = pa.Table.from_pylist(data)
+        # Preview is always columnar
+        arrow_table = pa.Table.from_pydict(data.get("data", {}))
         sink = pa.BufferOutputStream()
 
         with pa.ipc.new_stream(sink, arrow_table.schema) as writer:

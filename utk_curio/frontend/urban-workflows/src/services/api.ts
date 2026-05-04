@@ -3,9 +3,8 @@ import { getToken } from "../utils/authApi";
 
 export async function fetchData(fileName: string, vega: boolean = false) {
     try {
-        // We request the file without the vega URL param because 
-        // the backend now streams the raw Arrow IPC format directly.
-        const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}`;
+        // Append the vega URL parameter so the backend formats it correctly
+        const url = `${process.env.BACKEND_URL}/get?fileName=${encodeURIComponent(fileName)}${vega ? '&vega=true' : ''}`;
         console.log(`Fetching ${url}`);
         const _token = getToken();
         const response = await fetch(url, {
@@ -13,11 +12,8 @@ export async function fetchData(fileName: string, vega: boolean = false) {
                 // Change Content-Type (which is for sending data) 
                 // to Accept (which tells the server what we want to receive)
                 'Accept': 'application/vnd.apache.arrow.stream, application/json',
-                // // Not sure what this is. It seems auth tokens for users have been added, but since
-                // // I am streaming arrow bytes this content-type field will not exist and may need to
-                // // be handled somehow else. I'm leaving it commented it out for now
-                // 'Content-Type': 'application/json',
-                // ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
+                // Add authorization token so the backend accepts the request
+                ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
             },
         });
 
@@ -115,13 +111,35 @@ export async function fetchPreviewData(fileName: string) {
         const _token = getToken();
         const response = await fetch(url, {
             headers: {
-                'Content-Type': 'application/json',
+                // Accept Arrow stream for previews
+                'Accept': 'application/vnd.apache.arrow.stream, application/json',
                 ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
             },
         });
 
         if (!response.ok) {
             throw new Error(`Failed to fetch preview ${url}: ${response.statusText}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+
+        // Fix: Decode Arrow IPC stream instead of calling response.json()
+        if (contentType && contentType.includes('application/vnd.apache.arrow.stream')) {
+            const arrayBuffer = await response.arrayBuffer();
+            const arrowTable = tableFromIPC(arrayBuffer);
+
+            const columnsData: Record<string, any[]> = {};
+            arrowTable.schema.fields.forEach(field => {
+                const column = arrowTable.getChild(field.name);
+                if (column) {
+                    const arr = Array.from(column.toArray());
+                    columnsData[field.name] = arr.map(v => typeof v === 'bigint' ? Number(v) : v);
+                } else {
+                    columnsData[field.name] = [];
+                }
+            });
+
+            return { data: columnsData, dataType: "dataframe" };
         }
 
         const jsonData = await response.json();

@@ -39,12 +39,21 @@ export class ConnectionValidator {
     ) {
         if (outNodeType == undefined || inNodeType == undefined) return false;
 
-        let intersection = ConnectionValidator._inputTypesSupported[
-            inNodeType
-        ].filter((value: any) => {
-            return ConnectionValidator._outputTypesSupported[outNodeType].includes(
-                value
-            );
+        // let intersection = ConnectionValidator._inputTypesSupported[
+        //     inNodeType
+        // ].filter((value: any) => {
+        //     return ConnectionValidator._outputTypesSupported[outNodeType].includes(
+        //         value
+        //     );
+        // });
+        const inputTypes = ConnectionValidator._inputTypesSupported[inNodeType];
+        const outputTypes = ConnectionValidator._outputTypesSupported[outNodeType];
+
+        // Ensure we don't try to call .filter on undefined if the nodeType is missing/unregistered
+        if (!inputTypes || !outputTypes) return false;
+
+        let intersection = inputTypes.filter((value: any) => {
+            return outputTypes.includes(value);
         });
 
         return intersection.length > 0;

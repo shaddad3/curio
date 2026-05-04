@@ -360,8 +360,11 @@ export const useDataPoolLifecycle: NodeLifecycleHook = (data, nodeState) => {
     //     data.outputCallback(data.nodeId, clonedOutput);
     //     return; 
     //   }
-    // --- NEW SAFEGUARD: Bypass legacy JSON interaction logic for Parquet paths ---
+    // --- Bypass legacy JSON interaction logic for Parquet paths ---
       if (!parsedInput || !parsedInput.data || typeof parsedInput.data === 'string') {
+          const clonedOutput = JSON.parse(JSON.stringify(parsedInput));
+          setOutput({ code: "success", content: clonedOutput });
+          data.outputCallback(data.nodeId, clonedOutput);
           return;
       }
 

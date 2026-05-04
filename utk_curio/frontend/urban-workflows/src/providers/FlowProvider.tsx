@@ -798,7 +798,11 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             }
         }
         ancestorIds.add(targetNodeId);
+        
 
+        //// I think this is making it so that when I hover over a node somewhere 
+        //// in the middle and click run, the actual nodes that are run are all
+        //// the way in the front (1st nodes in the canvas). Commenting it out for now
         // Also include degree-0 nodes (no directed edges at all)
         const directedEdgeNodeIds = new Set<string>();
         for (const e of directedEdges) {
