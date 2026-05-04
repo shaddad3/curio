@@ -238,8 +238,13 @@ def get_file():
             data = transform_to_vega(data)
             arrow_table = pa.Table.from_pylist(data)
         else:
-            # Extract the columnar data payload directly
-            arrow_table = pa.Table.from_pydict(data.get("data", {}))
+            data_payload = data.get("data", {})
+            # Ensure inner dictionaries are converted to lists for Arrow's from_pydict
+            if data_payload and len(data_payload) > 0 and isinstance(list(data_payload.values())[0], dict):
+                clean_data = {col: list(vals.values()) for col, vals in data_payload.items()}
+                arrow_table = pa.Table.from_pydict(clean_data)
+            else:
+                arrow_table = pa.Table.from_pydict(data_payload)
         print(f"[/get] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
 
         # Stream the Arrow byte-stream to frontend instead of JSON!
@@ -283,10 +288,15 @@ def get_file_preview():
         data = resp.json()
         print(f"[/get-preview] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
         
-        # Preview is always columnar
-        arrow_table = pa.Table.from_pydict(data.get("data", {}))
-        sink = pa.BufferOutputStream()
+        data_payload = data.get("data", {})
+        # Ensure inner dictionaries are converted to lists
+        if data_payload and len(data_payload) > 0 and isinstance(list(data_payload.values())[0], dict):
+            clean_data = {col: list(vals.values()) for col, vals in data_payload.items()}
+            arrow_table = pa.Table.from_pydict(clean_data)
+        else:
+            arrow_table = pa.Table.from_pydict(data_payload)
 
+        sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
             writer.write_table(arrow_table)
         

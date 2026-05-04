@@ -361,9 +361,20 @@ export const useDataPoolLifecycle: NodeLifecycleHook = (data, nodeState) => {
     //     return; 
     //   }
     // --- Bypass legacy JSON interaction logic for Parquet paths ---
-      if (!parsedInput || !parsedInput.data || typeof parsedInput.data === 'string') {
+    //   if (!parsedInput || !parsedInput.data || typeof parsedInput.data === 'string') {
+    //       const clonedOutput = JSON.parse(JSON.stringify(parsedInput));
+    //       setOutput({ code: "success", content: clonedOutput });
+    //       data.outputCallback(data.nodeId, clonedOutput);
+    //       return;
+    //   }
+    // --- FIX: Pass the path forward if it's a DuckDB/Parquet reference ---
+      if (!parsedInput || !parsedInput.path || typeof parsedInput.path !== 'string') {
+          // If it doesn't have a path, it might be legacy JSON data; 
+          // continue to interaction logic if it has .data, otherwise return.
+          if (!parsedInput.data) return; 
+      } else {
+          // It's a DuckDB reference. Pass it downstream and exit the interaction block.
           const clonedOutput = JSON.parse(JSON.stringify(parsedInput));
-          setOutput({ code: "success", content: clonedOutput });
           data.outputCallback(data.nodeId, clonedOutput);
           return;
       }

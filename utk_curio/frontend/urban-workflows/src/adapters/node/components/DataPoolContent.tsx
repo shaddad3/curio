@@ -58,7 +58,9 @@ const ContentComponent = ({
               const previewData = await fetchPreviewData(fileId);
 
               let nextPreviewTable: any[] = [];
-              if (previewData.dataType === "dataframe" && previewData.data) {
+              if (Array.isArray(previewData)) {
+                  nextPreviewTable = previewData;
+              } else if (previewData.dataType === "dataframe" && previewData.data) {
                   const columns = Object.keys(previewData.data);
                   const firstColumn = columns[0];
                   const indices = firstColumn ? Object.keys(previewData.data[firstColumn] ?? {}) : [];
@@ -188,9 +190,15 @@ const ContentComponent = ({
 
 export default function DataPoolContent({ activeTab, onSelectTab, tabData, tableData, data = { nodeId: '', input: '' } }: DataPoolContentProps) {
   const wrappers: any[] = (() => {
-    if (!data.input || typeof data.input !== "object") return [];
-    if (data.input.dataType === "outputs" && Array.isArray(data.input.data)) return data.input.data;
-    return [data.input];
+    let currentInput = data.input;
+    // NEW: Defensive parsing
+    if (typeof currentInput === "string" && currentInput !== "") {
+        try { currentInput = JSON.parse(currentInput); } catch (e) {}
+    }
+    
+    if (!currentInput || typeof currentInput !== "object") return [];
+    if (currentInput.dataType === "outputs" && Array.isArray(currentInput.data)) return currentInput.data;
+    return [currentInput];
   })();
 
   return (

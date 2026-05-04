@@ -76,18 +76,74 @@ export class PythonInterpreter {
             .then((json) => {
                 let endTime = formatDate(new Date());
 
+                // let typesInput: string[] = [];
+                // // console.log("------------ inputTypes", json.inputTypes)
+                // // console.log("------------", json)
+                // if (input != "") typesInput = json.input.dataType;//getType([input]);
+
+                // let typesOuput: string[] = [];
+
+                // if (json.output != "") {
+                //     if (json.stderr != "") {
+                //         typesOuput = ["error"];
+                //     } else {
+                //         typesOuput = json.output.dataType;// getType([json.output]);
+                //     }
+                // }
+                // Parse the stringified output from the backend
+                // if (typeof json.output === "string" && json.output !== "") {
+                //     try {
+                //         json.output = JSON.parse(json.output);
+                //     } catch (e) {
+                //         console.error("Failed to parse json.output", e);
+                //     }
+                // }
+                
+                // // Parse the stringified input
+                // if (typeof json.input === "string" && json.input !== "") {
+                //     try {
+                //         json.input = JSON.parse(json.input);
+                //     } catch (e) {
+                //         console.error("Failed to parse json.input", e);
+                //     }
+                // }
+
+                // let typesInput: string[] = [];
+                
+                // // Safely access json.input
+                // if (input != "" && json.input && json.input.dataType) {
+                //     typesInput = json.input.dataType;
+                // }
+
+                // let typesOuput: string[] = [];
+
+                // if (json.output != "") {
+                //     if (json.stderr != "") {
+                //         typesOuput = ["error"];
+                //     } else if (json.output && json.output.dataType) {
+                //         typesOuput = json.output.dataType;
+                //     }
+                // }
+                // NEW: Parse stringified output and input
+                if (typeof json.output === "string" && json.output !== "") {
+                    try { json.output = JSON.parse(json.output); } catch (e) {}
+                }
+                if (typeof json.input === "string" && json.input !== "") {
+                    try { json.input = JSON.parse(json.input); } catch (e) {}
+                }
+
                 let typesInput: string[] = [];
-                // console.log("------------ inputTypes", json.inputTypes)
-                // console.log("------------", json)
-                if (input != "") typesInput = json.input.dataType;//getType([input]);
+                // Safely check dataType after parsing
+                if (input != "" && json.input && json.input.dataType) {
+                    typesInput = Array.isArray(json.input.dataType) ? json.input.dataType : [json.input.dataType];
+                }
 
                 let typesOuput: string[] = [];
-
                 if (json.output != "") {
                     if (json.stderr != "") {
                         typesOuput = ["error"];
-                    } else {
-                        typesOuput = json.output.dataType;// getType([json.output]);
+                    } else if (json.output && json.output.dataType) {
+                        typesOuput = Array.isArray(json.output.dataType) ? json.output.dataType : [json.output.dataType];
                     }
                 }
 

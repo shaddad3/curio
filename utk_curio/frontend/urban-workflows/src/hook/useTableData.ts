@@ -48,15 +48,15 @@ const useTableData = ({ data }: { data: INodeData }) => {
     dataInputBypass.current = true;
   }, [data.input]);
 
-  const createTableData = (parsedOutput: ICodeDataContent) => {
-    let tableData = [];
 
-    // @ts-ignore
-    if (parsedOutput != "") {
-        // let parsedOutput = parsedOutput;
-        // parsedOutput.data = parsedOutput.data;
-        // console.log("Creating table", parsedOutput);
-        if (parsedOutput.dataType == "dataframe") {
+  const createTableData = (parsedOutput: any) => {
+    let tableData: any[] = [];
+
+    if (parsedOutput && parsedOutput !== "") {
+        if (Array.isArray(parsedOutput)) {
+            // Arrow data parsed directly into an array of rows
+            tableData = parsedOutput;
+        } else if (parsedOutput.dataType === "dataframe") {
             let columns = Object.keys(parsedOutput.data);
             let dfIndices = Object.keys(parsedOutput.data[columns[0]]);
             for (let i = 0; i < dfIndices.length; i++) {
@@ -66,18 +66,13 @@ const useTableData = ({ data }: { data: INodeData }) => {
                 }
                 tableData.push(element);
             }
-        }
-        else if(parsedOutput.dataType == "geodataframe" && parsedOutput.data.features.length > 0) {
+        } else if (parsedOutput.dataType === "geodataframe" && parsedOutput.data.features.length > 0) {
             let columns = Object.keys(parsedOutput.data.features[0].properties);
-
             for (let i = 0; i < parsedOutput.data.features.length; i++) {
                 let element: any = {};
-
                 for (const column of columns) {
-                    element[column] =
-                        parsedOutput.data.features[i].properties[column];
+                    element[column] = parsedOutput.data.features[i].properties[column];
                 }
-
                 tableData.push(element);
             }
         }
@@ -85,6 +80,44 @@ const useTableData = ({ data }: { data: INodeData }) => {
 
     return tableData;
   };
+
+  // const createTableData = (parsedOutput: ICodeDataContent) => {
+  //   let tableData = [];
+
+  //   // @ts-ignore
+  //   if (parsedOutput != "") {
+  //       // let parsedOutput = parsedOutput;
+  //       // parsedOutput.data = parsedOutput.data;
+  //       // console.log("Creating table", parsedOutput);
+  //       if (parsedOutput.dataType == "dataframe") {
+  //           let columns = Object.keys(parsedOutput.data);
+  //           let dfIndices = Object.keys(parsedOutput.data[columns[0]]);
+  //           for (let i = 0; i < dfIndices.length; i++) {
+  //               let element: any = {};
+  //               for (const column of columns) {
+  //                   element[column] = parsedOutput.data[column][dfIndices[i]];
+  //               }
+  //               tableData.push(element);
+  //           }
+  //       }
+  //       else if(parsedOutput.dataType == "geodataframe" && parsedOutput.data.features.length > 0) {
+  //           let columns = Object.keys(parsedOutput.data.features[0].properties);
+
+  //           for (let i = 0; i < parsedOutput.data.features.length; i++) {
+  //               let element: any = {};
+
+  //               for (const column of columns) {
+  //                   element[column] =
+  //                       parsedOutput.data.features[i].properties[column];
+  //               }
+
+  //               tableData.push(element);
+  //           }
+  //       }
+  //   }
+
+  //   return tableData;
+  // };
 
   const customWidgetsCallback = (div: HTMLElement) => {
     const labelBetween = document.createElement("label");
@@ -130,13 +163,28 @@ const useTableData = ({ data }: { data: INodeData }) => {
 
   const processDataAsync = async () => {
     try {
-      // Normalize input wrappers: handle merge outputs
+      // // Normalize input wrappers: handle merge outputs
+      // let wrappers: any[] = [];
+      // if (data.input && typeof data.input === "object") {
+      //   if (data.input.dataType === "outputs" && Array.isArray(data.input.data)) {
+      //     wrappers = data.input.data;
+      //   } else {
+      //     wrappers = [data.input];
+      //   }
+      // }
+      let currentInput = data.input;
+      // NEW: Defensive parsing
+      if (typeof currentInput === "string" && currentInput !== "") {
+          try { currentInput = JSON.parse(currentInput); } catch (e) {}
+      }
+
+      // Normalize input wrappers
       let wrappers: any[] = [];
-      if (data.input && typeof data.input === "object") {
-        if (data.input.dataType === "outputs" && Array.isArray(data.input.data)) {
-          wrappers = data.input.data;
+      if (currentInput && typeof currentInput === "object") {
+        if (currentInput.dataType === "outputs" && Array.isArray(currentInput.data)) {
+          wrappers = currentInput.data;
         } else {
-          wrappers = [data.input];
+          wrappers = [currentInput];
         }
       }
 
