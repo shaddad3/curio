@@ -36,8 +36,159 @@ Curio I modified to do this: **Backend and Frontend**. Most of the changes are i
 
 
 # Backend Changes
+## ```app/api/routes.py```
+This is the only change we do in the backend, as we want to keep all the DuckDB for file storage in tact and just change what is sent to the frontend.
+We modify the **/get and /get-preview** endpoints to construct an Arrow Table from the retrieved data and to then stream this Arrow table to the frontend 
+instead of sending JSON. Below I pasted the code snippet from the /get endpoint, and it is nearly identical for the /get-preview endpoint as well.
+
+```
+        data = resp.json()
+        # Construct the data into an Arrow Table 
+        if vega:
+            data = transform_to_vega(data)
+            arrow_table = pa.Table.from_pylist(data)
+        else:
+            data_payload = data.get("data", {})
+            # Ensure inner dictionaries are converted to lists for Arrow's from_pydict
+            if data_payload and len(data_payload) > 0 and isinstance(list(data_payload.values())[0], dict):
+                clean_data = {col: list(vals.values()) for col, vals in data_payload.items()}
+                arrow_table = pa.Table.from_pydict(clean_data)
+            else:
+                arrow_table = pa.Table.from_pydict(data_payload)
+        print(f"[/get] id={file_name} took={time.perf_counter()-t0:.4f}s", flush=True)
+        # arrow_table = pa.Table.from_pylist(data)
+        # Stream the Arrow byte-stream to frontend instead of JSON!
+        sink = pa.BufferOutputStream()
+
+        with pa.ipc.new_stream(sink, arrow_table.schema) as writer:
+            writer.write_table(arrow_table)
+        
+        return Response(
+            sink.getvalue().to_pybytes(),
+            mimetype='application/vnd.apache.arrow.stream'
+        )
+```
 
 # Frontend Changes
+
+
+## ```hook/useTableData.ts```
+
+The first addition we made to this file was in the ```createTableData``` function. We add a safeguard to ensure that the Arrow data is not 
+further parsed or modified and gets passed in the correct form.
+
+Now this function looks like so:
+```
+const createTableData = (parsedOutput: any) => {
+    let tableData: any[] = [];
+
+    if (parsedOutput && parsedOutput !== "") {
+        if (Array.isArray(parsedOutput)) {
+            // Arrow data parsed directly into an array of rows
+            tableData = parsedOutput;
+        } else if (parsedOutput.dataType === "dataframe") {
+            let columns = Object.keys(parsedOutput.data);
+            let dfIndices = Object.keys(parsedOutput.data[columns[0]]);
+            for (let i = 0; i < dfIndices.length; i++) {
+                let element: any = {};
+                for (const column of columns) {
+                    element[column] = parsedOutput.data[column][dfIndices[i]];
+                }
+                tableData.push(element);
+            }
+        } else if (parsedOutput.dataType === "geodataframe" && parsedOutput.data.features.length > 0) {
+            let columns = Object.keys(parsedOutput.data.features[0].properties);
+            for (let i = 0; i < parsedOutput.data.features.length; i++) {
+                let element: any = {};
+                for (const column of columns) {
+                    element[column] = parsedOutput.data.features[i].properties[column];
+                }
+                tableData.push(element);
+            }
+        }
+    }
+
+    return tableData;
+  };
+```
+
+The second addition we made to this file was in the ```processDataAsync``` function. We add an interceptor within the map function to ensure
+that the arrow byte-stream is being preserved for downstream nodes to use. 
+```
+        tabd = tabd.map ((item) => {
+        // If it's an Arrow byte stream array, skip Object.assign to preserve the array structure 
+        // needed downstream by Data Transformation nodes.
+        if (Array.isArray(item)) {
+            item.forEach((row: any, i: number) => {
+                row.interacted = "0";
+                if (data.propagation && data.propagation[i] !== undefined) {
+                    row.interacted = data.propagation[i];
+                }
+            });
+            return item;
+        }
+
+        let parsedInput = Object.assign({}, item);
+        if(parsedInput.dataType == "dataframe") {
+        // ... the rest of the existing dataframe/geodataframe mappings in this function
+```
+
+## ```adapters/node/DataPoolLifecycle.tsx```
+Surrounding the Data Pool node, we had to make changes so that it would no longer loop through deep JSON. We pivotted away from JSON and to Parquet in the
+original version of my Curio project, and have pulled that over to this attempted integration with the new DuckDB file storage architecture. The Data Pool node is 
+still not functioning in my latest testing. For some reason, it displays "No Data". When I bypass the Data Pool and pass the data straight from a Data Loading or Transformation
+node, the subsequent nodes do get the data and can access it (whether it is a plot or another computation node). The issue could be that the modifications I made in the previous 
+version (using Parquet for on-disk storage, DuckDB for querying and returning Arrow byte-streams, and frontend handling the Arrow byte-stream instead of JSON) are not fully
+compatible with the new changes to data storage with DuckDB. I believe it isn't insurmountable, but I was not able to get it working within the week I spent trying to merge the
+two implementations. 
+
+The changes that are currently in this file are as below:
+
+```
+useEffect(() => {
+    if (output.content != "") {
+      // ... existing parsing logic ...
+
+      // Pass the path forward if it's a DuckDB/Parquet reference
+      if (!parsedInput || !parsedInput.path || typeof parsedInput.path !== 'string') {
+          // If it doesn't have a path, it might be legacy JSON data 
+          // continue to interaction logic if it has .data, otherwise return.
+          if (!parsedInput.data) return; 
+      } else {
+          // It's a DuckDB reference. Pass it downstream and exit the interaction block
+          const clonedOutput = JSON.parse(JSON.stringify(parsedInput));
+          data.outputCallback(data.nodeId, clonedOutput);
+          return;
+      }
+      // ... rest of interaction logic ...
+```
+
+```
+ const tableData = useMemo(() => {
+    // 'output' now holds the path, so we use 'tabData' (populated by processDataAsync) for rendering the UI.
+    const displayTable = tabData[parseInt(activeTab)];
+    if (displayTable) return createTableData(displayTable as ICodeDataContent);
+    return [];
+  }, [tabData, activeTab, createTableData]);
+```
+
+## ```adapters/node/components/DataPoolContent.tsx```
+We updated how the Data Pool handles and maps Arrow data to ensure it renders right.
+
+The code now within one of the ```useEffect```'s is as below:
+```
+          setIsLoadingPreview(true);
+          try {
+              const previewData = await fetchPreviewData(fileId);
+              let nextPreviewTable: any[] = [];
+              // update rendering to work with the Arrow data
+              if (Array.isArray(previewData)) {
+                  nextPreviewTable = previewData;
+              } else if (previewData.dataType === "dataframe" && previewData.data) {
+                  const columns = Object.keys(previewData.data);
+                  const firstColumn = columns[0];
+                  // ... rest of the mapping
+```
 
 ## ```components/UniversalNode.tsx```
 I added a "success" to the output so that when a node finishes and runs successfully it notifies and signals this. Before it only signaled when an
@@ -57,8 +208,7 @@ useEffect(() => {
 In this file, we needed to update the ```headers``` so that we would accept the Arrow byte-stream as well:
 ```
 headers: {
-                // Change Content-Type (which is for sending data) 
-                // to Accept (which tells the server what we want to receive)
+                // Change Content-Type to Accept (which tells the server what we want to receive)
                 'Accept': 'application/vnd.apache.arrow.stream, application/json',
                 // Add authorization token so the backend accepts the request
                 ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
@@ -70,7 +220,69 @@ When I ran Curio and loaded a dataflow, it would crash and throw a runtime error
 
 Due to this error, I added a safety check in ```checkBoxCompatibility``` to ensure we don't call .filter() on a bad input or output type:
 ```
-if (!inputTypes || !outputTypes) return false;
+static checkBoxCompatibility(
+        outNodeType: NodeType | undefined,
+        inNodeType: NodeType | undefined
+    ) {
+        if (outNodeType == undefined || inNodeType == undefined) return false;
+
+        const inputTypes = ConnectionValidator._inputTypesSupported[inNodeType];
+        const outputTypes = ConnectionValidator._outputTypesSupported[outNodeType];
+
+        // Ensure we don't try to call .filter on undefined if the nodeType is missing/unregistered
+        if (!inputTypes || !outputTypes) return false;
+
+        let intersection = inputTypes.filter((value: any) => {
+            return outputTypes.includes(value);
+        });
+
+        return intersection.length > 0;
+    }
+```
+
+## ```PythonInterpreter.ts```
+Various bugs surrounding the transfer of data from a node to another, and one of them was that after a Data Cleaning / Transformation node ran, we would get NoneType errors when running some simple data cleanup or modification (such as using fillna() to replace entries in a dataset). 
+To fix this, inside of the ```interpretCode``` function, we update the final ```.then((json)``` block to parse the json input and output strings back into JavaScript objects. 
+
+```
+.then((json) => {
+    let endTime = formatDate(new Date());
+
+    // Parse stringified output and input
+    if (typeof json.output === "string" && json.output !== "") {
+        try { json.output = JSON.parse(json.output); } catch (e) {}
+    }
+    if (typeof json.input === "string" && json.input !== "") {
+        try { json.input = JSON.parse(json.input); } catch (e) {}
+    }
+
+    let typesInput: string[] = [];
+    // Safely check dataType after parsing
+    if (input != "" && json.input && json.input.dataType) {
+        typesInput = Array.isArray(json.input.dataType) ? json.input.dataType : [json.input.dataType];
+    }
+
+    let typesOuput: string[] = [];
+    if (json.output != "") {
+        if (json.stderr != "") {
+            typesOuput = ["error"];
+        } else if (json.output && json.output.dataType) {
+            typesOuput = Array.isArray(json.output.dataType) ? json.output.dataType : [json.output.dataType];
+        }
+    }
+
+    nodeExecProv(
+        startTime,
+        endTime,
+        workflow_name,
+        nodeType + "-" + nodeId,
+        mapTypes(typesInput),
+        mapTypes(typesOuput),
+        unresolvedUserCode
+    );
+
+    callback(json);
+})
 ```
 
 # Concluding Notes
