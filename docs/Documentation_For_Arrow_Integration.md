@@ -34,8 +34,43 @@ Other than this, I didn't need to install or add any packages and libraries manu
 The main changes I made to Curio was to try and add in streaming a Arrow byte-stream to the frontend instead of JSON. There are two pieces of
 Curio I modified to do this: **Backend and Frontend**. Most of the changes are in the Frontend, with only one file in the Backend being modified. 
 
+
 # Backend Changes
 
 # Frontend Changes
+
+## ```components/UniversalNode.tsx```
+I added a "success" to the output so that when a node finishes and runs successfully it notifies and signals this. Before it only signaled when an
+error occurred.
+
+```
+useEffect(() => {
+    outputCodeRef.current = output?.code;
+    // Add "success" to the condition so the pipeline knows the node finished
+    if (output?.code === "error" || output?.code === "success") {
+      signalNodeExecDone(data.nodeId);
+    }
+  }, [output?.code]);
+```
+
+## ```services/api.ts```
+In this file, we needed to update the ```headers``` so that we would accept the Arrow byte-stream as well:
+```
+headers: {
+                // Change Content-Type (which is for sending data) 
+                // to Accept (which tells the server what we want to receive)
+                'Accept': 'application/vnd.apache.arrow.stream, application/json',
+                // Add authorization token so the backend accepts the request
+                ...(_token ? { 'Authorization': `Bearer ${_token}` } : {}),
+            },
+```
+
+## ```ConnectionValidator.ts```
+When I ran Curio and loaded a dataflow, it would crash and throw a runtime error that was something like: "TypeError: undefined is not an object (evaluating 'ConnectionValidator._inputTypesSupported[inNodeType].filter')". 
+
+Due to this error, I added a safety check in ```checkBoxCompatibility``` to ensure we don't call .filter() on a bad input or output type:
+```
+if (!inputTypes || !outputTypes) return false;
+```
 
 # Concluding Notes
